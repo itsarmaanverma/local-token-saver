@@ -9,10 +9,10 @@ description = "Local, folder-scoped, retrieval-first context access for AI codin
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-dependencies = []
+dependencies = ["pypdf>=4"]
 
 [project.optional-dependencies]
-pdf = ["pypdf>=4"]
+pdf = ["pypdf>=4"]  # kept for backward compat; pypdf is now a core dependency
 
 [project.scripts]
 token-saver = "token_saver.cli:main"

@@ -58,8 +58,10 @@ def load_config(root: Path) -> dict:
         cfg = {}
     merged = json.loads(json.dumps(DEFAULT_CONFIG))  # deep copy
     for section, values in cfg.items():
-        if isinstance(values, dict):
-            merged.setdefault(section, {}).update(values)
+        if isinstance(merged.get(section), dict):
+            if isinstance(values, dict):
+                merged[section].update(values)
+            # non-dict override of a dict section is invalid — keep defaults
         else:
             merged[section] = values
     return merged

@@ -24,6 +24,11 @@ Before reading large files or searching broad folders:
 """
 
 
+def _toml_str(s: str) -> str:
+    """TOML basic string with backslashes and quotes escaped (Windows paths)."""
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def _server_command() -> tuple[str, list[str]]:
     exe = shutil.which("token-saver-mcp")
     if exe:
@@ -58,8 +63,8 @@ def install_codex(workspace: Path, global_scope: bool = True) -> str:
     if "[mcp_servers.token_saver]" in existing:
         return f"Codex: token_saver already configured in {cfg}"
     cmd, args = _server_command()
-    args_toml = ", ".join(f'"{a}"' for a in [*args, "--workspace", str(workspace)])
-    block = (f"\n[mcp_servers.token_saver]\ncommand = \"{cmd}\"\n"
+    args_toml = ", ".join(_toml_str(a) for a in [*args, "--workspace", str(workspace)])
+    block = (f"\n[mcp_servers.token_saver]\ncommand = {_toml_str(cmd)}\n"
              f"args = [{args_toml}]\n")
     cfg.write_text(existing + block, encoding="utf-8")
     return f"Codex: registered token_saver MCP server in {cfg}"

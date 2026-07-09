@@ -70,6 +70,10 @@ class Server:
 
     def call_tool(self, name: str, args: dict) -> str:
         root = self._root(args)
+        max_tokens = _int_arg(args, "max_tokens")
+        top_k = _int_arg(args, "top_k", 10)
+        start = _int_arg(args, "start", 1)
+        end = _int_arg(args, "end")
         if name == "workspace_status":
             if not index_path(root).exists():
                 return f"Workspace {root}: no index yet. Call index_workspace."
@@ -84,9 +88,9 @@ class Server:
             init_workspace(root)
             return json.dumps(index_workspace(root, force=bool(args.get("force"))))
         if name == "retrieve_context":
-            return retrieve_context(root, args["task"], max_tokens=args.get("max_tokens"))
+            return retrieve_context(root, args["task"], max_tokens=max_tokens)
         if name == "semantic_search":
-            hits = search(root, args["query"], top_k=int(args.get("top_k", 10)))
+            hits = search(root, args["query"], top_k=top_k)
             return "\n".join(
                 f"{h.score:.2f} {h.path}:{h.start_line}-{h.end_line} "
                 f"[{h.section}] {h.text[:160]!r}" for h in hits) or "No matches."
@@ -95,8 +99,7 @@ class Server:
         if name == "summarize_folder":
             return summarize_folder(root, args.get("folder"), focus=args.get("focus"))
         if name == "get_source_slice":
-            return get_source_slice(root, args["file"], int(args.get("start", 1)),
-                                    args.get("end"))
+            return get_source_slice(root, args["file"], start or 1, end)
         if name == "advise":
             return advise(root)
         raise ValueError(f"Unknown tool: {name}")
@@ -129,6 +132,19 @@ class Server:
             return {"jsonrpc": "2.0", "id": mid,
                     "error": {"code": -32601, "message": f"Method not found: {method}"}}
         return None
+
+
+def _int_arg(args: dict, key: str, default: int | None = None) -> int | None:
+    """Validate integer-ish tool args at the protocol boundary."""
+    val = args.get(key, default)
+    if val is None or isinstance(val, bool):
+        if isinstance(val, bool):
+            raise ValueError(f"Argument {key!r} must be an integer, got boolean")
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        raise ValueError(f"Argument {key!r} must be an integer, got {val!r}") from None
 
 
 def _result(mid, result: dict) -> dict:

@@ -44,6 +44,7 @@ def cmd_index(args) -> int:
 
 def _print_stats(stats: dict) -> None:
     print(f"  files: {stats['files']}  chunks: {stats['chunks']}  "
+          f"vectors: {stats.get('vectors', 0)}  "
           f"indexed tokens: {stats['indexed_tokens']:,}")
     if "seconds" in stats:
         print(f"  scanned: {stats['files_scanned']}  (re)indexed: {stats['files_indexed']}  "
@@ -82,7 +83,14 @@ def cmd_retrieve(args) -> int:
 def cmd_summarize(args) -> int:
     root = _ws(args)
     target = Path(args.target)
-    rel = str(target) if not target.is_absolute() else str(target.relative_to(root))
+    if target.is_absolute():
+        try:
+            rel = str(target.relative_to(root))
+        except ValueError:
+            print(f"ERROR: {target} is outside workspace {root}", file=sys.stderr)
+            return 1
+    else:
+        rel = str(target)
     if (root / rel).is_dir() or args.target in (".", ""):
         print(summarize_folder(root, None if args.target in (".", "") else rel,
                                focus=args.focus))
@@ -100,6 +108,13 @@ def cmd_slice(args) -> int:
 def cmd_advise(args) -> int:
     print(advise(_ws(args)))
     return 0
+
+
+def cmd_setup(args) -> int:
+    from .setup_deps import setup
+    ok, report = setup(auto_install=not args.check)
+    print(report)
+    return 0 if ok else 1
 
 
 def cmd_mcp(args) -> int:
@@ -170,6 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("advise", help="retrieve vs cached-injection recommendation")
     sp.add_argument("path", nargs="?")
     sp.set_defaults(fn=cmd_advise)
+
+    sp = sub.add_parser("setup", help="verify/install pipeline dependencies (pypdf, FTS5)")
+    sp.add_argument("--check", action="store_true", help="report only, do not install")
+    sp.set_defaults(fn=cmd_setup)
 
     sp = sub.add_parser("mcp", help="install MCP server into agent configs")
     sp.add_argument("action", choices=["install"])

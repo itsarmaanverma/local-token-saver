@@ -12,17 +12,33 @@ remote upload, index lives inside the selected folder.
 ## Install
 
 ```bash
-pip install -e .            # from a clone
-pip install -e ".[pdf]"     # + PDF extraction (pypdf)
+./install.sh                # one-shot: package + all dependencies + verification
+# or manually:
+pip install .               # pypdf installs automatically as a dependency
+token-saver setup           # verify/auto-install pipeline deps (pypdf, FTS5)
 ```
+
+## Automatic PDF → Markdown → vectorizer pipeline
+
+Every `token-saver index` run executes a fully script-based pipeline — no
+LLM, no API keys, no model downloads:
+
+```text
+scan folder → PDFs converted to Markdown (cached mirrors in
+.tokensaver/converted/, page-aware `## Page N` headings) → structure-aware
+chunking → SQLite FTS5 (BM25) + hashed-TF vector embeddings (384-dim,
+pure stdlib) → hybrid lexical+semantic retrieval with page citations
+```
+
+Search results always cite the **original PDF path and page number**, not the
+mirror. Conversion is cached by mtime and re-runs only when the PDF changes.
 
 ## Quick start
 
 ```bash
 cd ~/Documents/legal-data
-token-saver init                 # creates .tokensaver/ + .tokensaverignore
-token-saver index                # builds the local index (incremental)
-token-saver mcp install --claude --codex --protocol
+token-saver select .             # init + index (PDF→md→vectors automatic)
+token-saver mcp install . --claude --codex --protocol
 ```
 
 Then, inside Claude Code or Codex, ask normally ("Summarize the renewal
@@ -36,7 +52,8 @@ token-saver init [path]              # create .tokensaver/ in a folder
 token-saver select <path>            # init + index in one step
 token-saver index [path] [--force]   # build/update index
 token-saver status [path]            # workspace + index stats
-token-saver search "query" [-v]      # ranked BM25 search
+token-saver setup [--check]          # verify/install pipeline dependencies
+token-saver search "query" [-v]      # hybrid BM25 + vector search
 token-saver retrieve "task" [--max-tokens N]   # budgeted context pack
 token-saver summarize <file|dir> [--focus X]   # extractive summary
 token-saver slice <file> [start] [end]         # exact line range
@@ -87,9 +104,10 @@ Dropped candidates are reported, never silently truncated.
 
 - Phase 2: LLM chunk contextualization + hierarchical summaries (Haiku),
   contextual embeddings, reranking.
-- Phase 3: vector index (sqlite-vec/LanceDB) for hybrid semantic retrieval.
-- Phase 4: Claude Code PreToolUse hook to route oversized Read/Grep to
-  retrieval; RTK bridge for shell-output compaction.
+- Vector upgrade: swap the built-in hashed-TF vectors for real embedding
+  models (sentence-transformers / sqlite-vec) behind the same interface.
+- Claude Code PreToolUse hook to route oversized Read/Grep to retrieval;
+  RTK bridge for shell-output compaction.
 
 ## Tests
 

@@ -22,7 +22,7 @@ def summarize_file(root: Path, rel_path: str, focus: str | None = None,
     frow = con.execute("SELECT ftype, ntokens, size FROM files WHERE path=?",
                        (rel_path,)).fetchone()
     con.close()
-    if not rows:
+    if not rows or frow is None:
         return f"{rel_path}: not in index (run token-saver index)."
 
     out = [f"# {rel_path}",

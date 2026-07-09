@@ -122,5 +122,132 @@ class TokenSaverTest(unittest.TestCase):
         self.assertTrue(bad["result"].get("isError"))
 
 
+def make_minimal_pdf(text: str) -> bytes:
+    """Handcraft a one-page PDF with real extractable text (no deps)."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode()
+    objs = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        b"/Resources << /Font << /F1 5 0 R >> >> >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out = bytearray(b"%PDF-1.4\n")
+    offsets = []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_at = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n".encode()
+    out += b"0000000000 65535 f \n"
+    for off in offsets:
+        out += f"{off:010d} 00000 n \n".encode()
+    out += (f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_at}\n%%EOF\n").encode()
+    return bytes(out)
+
+
+class FixesAndPipelineTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _init_index(self):
+        init_workspace(self.tmp)
+        return index_workspace(self.tmp)
+
+    def test_multipart_ignore_patterns(self):
+        (self.tmp / "docs" / "private").mkdir(parents=True)
+        (self.tmp / "docs" / "private" / "secret.md").write_text("# classified renewal",
+                                                                 encoding="utf-8")
+        (self.tmp / "docs" / "public.md").write_text("# public renewal", encoding="utf-8")
+        (self.tmp / "rootonly").mkdir()
+        (self.tmp / "rootonly" / "x.md").write_text("# rootonly doc", encoding="utf-8")
+        (self.tmp / "sub" / "rootonly").mkdir(parents=True)
+        (self.tmp / "sub" / "rootonly" / "y.md").write_text("# nested rootonly doc",
+                                                            encoding="utf-8")
+        init_workspace(self.tmp)
+        (self.tmp / ".tokensaverignore").write_text(
+            "docs/private/\n/rootonly/\n", encoding="utf-8")
+        index_workspace(self.tmp)
+        paths = {h.path for h in search(self.tmp, "renewal rootonly doc", top_k=20)}
+        self.assertIn("docs/public.md", paths)
+        self.assertNotIn("docs/private/secret.md", paths)   # multi-part dir pattern
+        self.assertNotIn("rootonly/x.md", paths)            # root-anchored
+        self.assertIn("sub/rootonly/y.md", paths)           # anchor must not over-match
+
+    def test_toml_escaping(self):
+        from token_saver.install import _toml_str
+        self.assertEqual(_toml_str('C:\\Users\\armaa'), '"C:\\\\Users\\\\armaa"')
+        self.assertEqual(_toml_str('pa"th'), '"pa\\"th"')
+
+    def test_config_scalar_section_keeps_defaults(self):
+        init_workspace(self.tmp)
+        (self.tmp / ".tokensaver" / "config.json").write_text(
+            '{"retrieval": "invalid"}', encoding="utf-8")
+        cfg = load_config(self.tmp)
+        self.assertEqual(cfg["retrieval"]["max_context_tokens"], 8000)
+
+    def test_summarize_abs_path_outside_root(self):
+        from token_saver.cli import main as cli_main
+        self._init_index()
+        rc = cli_main(["summarize", "/etc/passwd", str(self.tmp)])
+        self.assertEqual(rc, 1)  # clean error, no traceback
+
+    def test_mcp_int_coercion(self):
+        (self.tmp / "a.md").write_text("# renewal terms apply here", encoding="utf-8")
+        self._init_index()
+        srv = Server(str(self.tmp))
+        ok = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                         "params": {"name": "retrieve_context",
+                                    "arguments": {"task": "renewal", "max_tokens": "600"}}})
+        self.assertFalse(ok["result"].get("isError"))
+        bad = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                          "params": {"name": "retrieve_context",
+                                     "arguments": {"task": "renewal", "max_tokens": "lots"}}})
+        self.assertTrue(bad["result"].get("isError"))
+        self.assertIn("must be an integer", bad["result"]["content"][0]["text"])
+
+    def test_mtime_short_circuit_and_metadata_drift(self):
+        f = self.tmp / "a.md"
+        f.write_text("# renewal terms", encoding="utf-8")
+        self._init_index()
+        stats = index_workspace(self.tmp)
+        self.assertEqual(stats["files_indexed"], 0)
+        # touch (metadata drift, same content) — must not re-chunk
+        import os as _os
+        _os.utime(f, (f.stat().st_atime, f.stat().st_mtime + 5))
+        stats = index_workspace(self.tmp)
+        self.assertEqual(stats["files_indexed"], 0)
+
+    def test_pdf_to_md_to_vector_pipeline(self):
+        try:
+            import pypdf  # noqa: F401
+        except ImportError:
+            self.skipTest("pypdf not installed")
+        (self.tmp / "contract.pdf").write_bytes(
+            make_minimal_pdf("Renewal obligations require sixty days notice"))
+        stats = self._init_index()
+        self.assertGreater(stats["vectors"], 0)
+        md = self.tmp / ".tokensaver" / "converted" / "contract.pdf.md"
+        self.assertTrue(md.exists())                      # PDF -> Markdown mirror
+        self.assertIn("## Page 1", md.read_text(encoding="utf-8"))
+        hits = search(self.tmp, "renewal obligations notice")
+        self.assertTrue(hits)
+        self.assertEqual(hits[0].path, "contract.pdf")    # cites the ORIGINAL pdf
+        self.assertEqual(hits[0].page, 1)                 # with the page number
+
+    def test_vectors_and_semantic_scoring(self):
+        from token_saver.vectors import cosine, embed
+        a = embed("automatic contract renewal with notice period")
+        b = embed("the contract renews automatically unless notice is given")
+        c = embed("goroutine channel scheduler preemption")
+        self.assertGreater(cosine(a, b), cosine(a, c))
+        self.assertAlmostEqual(cosine(a, a), 1.0, places=5)
+
+
 if __name__ == "__main__":
     unittest.main()
