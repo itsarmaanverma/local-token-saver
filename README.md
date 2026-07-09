@@ -37,7 +37,7 @@ downloads, no network access, deterministic across machines.
 ### Option A — one-shot script (recommended)
 
 ```bash
-git clone https://github.com/<YOUR_USERNAME>/local-token-saver.git
+git clone https://github.com/itsarmaanverma/local-token-saver.git
 cd local-token-saver
 ./install.sh
 ```
@@ -49,14 +49,14 @@ prints the quick-start commands.
 ### Option B — pip, straight from GitHub
 
 ```bash
-pip install git+https://github.com/<YOUR_USERNAME>/local-token-saver.git
+pip install git+https://github.com/itsarmaanverma/local-token-saver.git
 token-saver setup        # verifies deps; auto-installs anything missing
 ```
 
 ### Option C — from a local clone (editable, for development)
 
 ```bash
-git clone https://github.com/<YOUR_USERNAME>/local-token-saver.git
+git clone https://github.com/itsarmaanverma/local-token-saver.git
 cd local-token-saver
 pip install -e .
 token-saver setup
@@ -193,7 +193,7 @@ nearest `CLAUDE.md`/`AGENTS.md` → current directory.
 ## Development
 
 ```bash
-git clone https://github.com/<YOUR_USERNAME>/local-token-saver.git
+git clone https://github.com/itsarmaanverma/local-token-saver.git
 cd local-token-saver
 pip install -e .
 python3 -m unittest discover -s tests -v     # 20 tests
