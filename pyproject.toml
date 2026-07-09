@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-token-saver"
+version = "0.1.0"
+description = "Local, folder-scoped, retrieval-first context access for AI coding/document agents (Claude Code, Codex)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+pdf = ["pypdf>=4"]
+
+[project.scripts]
+token-saver = "token_saver.cli:main"
+token-saver-mcp = "token_saver.mcp_server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
