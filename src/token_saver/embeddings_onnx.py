@@ -24,6 +24,12 @@ MODEL_FILE = "model_quantized.onnx"
 TOKENIZER_FILE = "tokenizer.json"
 MAX_TOKENS = 256
 
+# Pinned HuggingFace source + expected hashes, used by setup_deps.py's downloader for pinned, hash-verified downloads.
+HF_REPO = "Xenova/all-MiniLM-L6-v2"
+HF_REVISION = "751bff37182d3f1213fa05d7196b954e230abad9"
+MODEL_SHA256 = "afdb6f1a0e45b715d0bb9b11772f032c399babd23bfc31fed1c170afc848bdb1"
+TOKENIZER_SHA256 = "da0e79933b9ed51798a3ae27893d3c5fa4a201126cef75586296df9b4d2c62a0"
+
 
 class EmbedderUnavailable(Exception):
     """Raised when the ONNX backend's deps or model files aren't present."""

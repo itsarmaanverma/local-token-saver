@@ -13,6 +13,7 @@ dependencies = ["pypdf>=4"]
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4"]  # kept for backward compat; pypdf is now a core dependency
+embeddings = ["onnxruntime>=1.16", "tokenizers>=0.15"]
 
 [project.scripts]
 token-saver = "token_saver.cli:main"
