@@ -1,7 +1,7 @@
 """Incremental SQLite + FTS5 + vector index over a workspace folder.
 
 Pipeline per index run (all script-based, no LLM):
-  scan → PDF-to-Markdown conversion (cached) → parse/chunk → FTS5 + hashed vectors
+  scan → PDF-to-Markdown conversion (cached) → parse/chunk → FTS5 + vectors (pluggable backend)
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .config import index_path, load_config, ts_dir
 from .convert import ensure_converted
 from .ignore import load_matcher
 from .parsers import Chunk, file_type, parse_file, parse_markdown
-from .vectors import embed, to_blob
+from .vectors import Embedder, get_embedder, to_blob
 
 _PAGE_IN_HEADING = re.compile(r"^Page (\d+)$")
 
@@ -129,7 +129,8 @@ def _chunks_for(root: Path, path: Path, rel: str, ftype: str, chunk_chars: int) 
     return chunks
 
 
-def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int) -> bool:
+def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int,
+                embedder: Embedder) -> bool:
     """Index a single file if new/changed. Returns True if (re)indexed."""
     rel = path.relative_to(root).as_posix()
     st = path.stat()
@@ -165,7 +166,7 @@ def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int
         )
         con.execute(
             "INSERT INTO vectors(chunk_id, vec) VALUES (?,?)",
-            (ccur.lastrowid, to_blob(embed(f"{c.section} {c.text}"))),
+            (ccur.lastrowid, to_blob(embedder.embed(f"{c.section} {c.text}"))),
         )
     return True
 
@@ -176,11 +177,25 @@ def index_workspace(root: Path, force: bool = False) -> dict:
     cfg = load_config(root)
     icfg = cfg["indexing"]
     chunk_chars = int(icfg["target_chunk_tokens"]) * 4
+    embedder = get_embedder(cfg)  # constructed once per run — ONNX loads a model in __init__
     con = connect(root)
     if force:
         all_ids = [r[0] for r in con.execute("SELECT id FROM files").fetchall()]
         _delete_files(con, all_ids)
     start = time.time()
+
+    # Backend-mismatch detection: if the stored backend differs from the
+    # active embedder, do a re-embed-only pass over existing chunks — no
+    # re-scan, re-convert, re-chunk, or touching files/chunks/FTS tables.
+    reembedded = 0
+    row = con.execute("SELECT value FROM meta WHERE key='embedding_backend'").fetchone()
+    if row and row[0] and row[0] != embedder.name:
+        for cid, section, text in con.execute("SELECT id, section, text FROM chunks").fetchall():
+            vec = embedder.embed(f"{section} {text}")
+            con.execute("INSERT OR REPLACE INTO vectors(chunk_id, vec) VALUES (?,?)",
+                        (cid, to_blob(vec)))
+            reembedded += 1
+
     paths = scan_files(root, int(icfg["max_file_bytes"]), bool(icfg["follow_symlinks"]))
     seen: set[str] = set()
     indexed = 0
@@ -188,7 +203,7 @@ def index_workspace(root: Path, force: bool = False) -> dict:
         rel = p.relative_to(root).as_posix()
         seen.add(rel)
         try:
-            if _index_one(con, root, p, chunk_chars):
+            if _index_one(con, root, p, chunk_chars, embedder):
                 indexed += 1
         except (OSError, sqlite3.Error):
             continue
@@ -198,10 +213,13 @@ def index_workspace(root: Path, force: bool = False) -> dict:
     _delete_files(con, stale_ids)
     con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('last_index', ?)",
                 (str(time.time()),))
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_backend', ?)",
+                (embedder.name,))
     con.commit()
     stats = index_stats(con)
     stats.update({"files_scanned": len(paths), "files_indexed": indexed,
                   "files_removed": len(stale_ids),
+                  "reembedded": reembedded,
                   "seconds": round(time.time() - start, 2)})
     con.close()
     return stats
