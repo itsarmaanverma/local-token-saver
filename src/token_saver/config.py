@@ -22,6 +22,9 @@ DEFAULT_CONFIG = {
         "max_file_bytes": 20_000_000,
         "follow_symlinks": False,
     },
+    "embedding": {
+        "backend": "hashed_tf",  # "hashed_tf" | "onnx_minilm"
+    },
 }
 
 DEFAULT_IGNORES = [

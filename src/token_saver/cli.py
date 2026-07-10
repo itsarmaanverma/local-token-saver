@@ -113,6 +113,11 @@ def cmd_advise(args) -> int:
 def cmd_setup(args) -> int:
     from .setup_deps import setup
     ok, report = setup(auto_install=not args.check)
+    if args.with_embeddings:
+        from .setup_deps import setup_embeddings
+        emb_ok, emb_report = setup_embeddings(auto_install=not args.check, download_model=not args.check and not args.no_embeddings_model)
+        ok = ok and emb_ok
+        report = report + "\n" + emb_report
     print(report)
     return 0 if ok else 1
 
@@ -188,6 +193,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("setup", help="verify/install pipeline dependencies (pypdf, FTS5)")
     sp.add_argument("--check", action="store_true", help="report only, do not install")
+    sp.add_argument("--with-embeddings", action="store_true", help="also install onnxruntime/tokenizers and download the ONNX MiniLM embedding model")
+    sp.add_argument("--no-embeddings-model", action="store_true", help="skip downloading model files even with --with-embeddings (deps only)")
     sp.set_defaults(fn=cmd_setup)
 
     sp = sub.add_parser("mcp", help="install MCP server into agent configs")
