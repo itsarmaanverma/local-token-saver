@@ -1,8 +1,12 @@
-"""Script-based local vectorizer — no LLM, no model downloads, no network.
+"""Vectorizer backends — pluggable, so a real embedding model can replace
+the zero-dependency default without changing anything downstream.
 
-Hashed TF vectors over word unigrams + bigrams, L2-normalized, stored as
-float32 blobs in SQLite. Brute-force cosine works fine at workspace scale
-(tens of thousands of chunks). Deterministic across runs and machines.
+Two interchangeable `Embedder` implementations produce 384-dim, L2-normalized
+vectors stored as float32 blobs in SQLite:
+  - HashedTFEmbedder: hashed TF over word unigrams+bigrams. Default. No
+    model, no download, no network — deterministic across runs/machines.
+  - OnnxMiniLMEmbedder (embeddings_onnx.py): real sentence embeddings via a
+    quantized ONNX model. Opt-in, requires `setup --with-embeddings`.
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import hashlib
 import math
 import re
 import struct
+from abc import ABC, abstractmethod
 from array import array
 
 DIM = 384
@@ -35,19 +40,54 @@ def _bucket(token: str) -> tuple[int, int]:
     return val % DIM, 1 if (val >> 63) & 1 else -1
 
 
-def embed(text: str) -> array:
-    vec = array("f", [0.0] * DIM)
-    toks = _tokens(text)
-    if not toks:
+class Embedder(ABC):
+    """Common interface every vectorizer backend implements."""
+
+    name: str
+
+    @abstractmethod
+    def embed(self, text: str) -> array:
+        """Return a DIM-length, L2-normalized float array for `text`."""
+
+
+class HashedTFEmbedder(Embedder):
+    name = "hashed_tf"
+
+    def embed(self, text: str) -> array:
+        vec = array("f", [0.0] * DIM)
+        toks = _tokens(text)
+        if not toks:
+            return vec
+        for tok in toks:
+            dim, sign = _bucket(tok)
+            vec[dim] += sign
+        norm = math.sqrt(sum(v * v for v in vec))
+        if norm > 0:
+            for i in range(DIM):
+                vec[i] /= norm
         return vec
-    for tok in toks:
-        dim, sign = _bucket(tok)
-        vec[dim] += sign
-    norm = math.sqrt(sum(v * v for v in vec))
-    if norm > 0:
-        for i in range(DIM):
-            vec[i] /= norm
-    return vec
+
+
+def embed(text: str) -> array:
+    """Back-compat module-level entry point — always the hashed-TF backend."""
+    return HashedTFEmbedder().embed(text)
+
+
+def get_embedder(config: dict | None = None) -> Embedder:
+    """Select an embedder backend from workspace config.
+
+    Falls back to hashed_tf when onnx_minilm is requested but its deps or
+    model files aren't present yet (they're pulled by
+    `token-saver setup --with-embeddings`, not by this call).
+    """
+    backend = (config or {}).get("embedding", {}).get("backend", "hashed_tf")
+    if backend == "onnx_minilm":
+        from .embeddings_onnx import EmbedderUnavailable, OnnxMiniLMEmbedder
+        try:
+            return OnnxMiniLMEmbedder()
+        except EmbedderUnavailable:
+            return HashedTFEmbedder()
+    return HashedTFEmbedder()
 
 
 def to_blob(vec: array) -> bytes:
