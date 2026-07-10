@@ -218,11 +218,44 @@ src/token_saver/
 └── workspace.py    # workspace resolution
 ```
 
-## Roadmap
+## Latest changes — v0.2.0.dev4 (embedding-model tier, in progress)
 
-- LLM chunk contextualization + hierarchical summaries (optional, Haiku-tier)
-- Real embedding models (sentence-transformers / sqlite-vec) behind the same
-  vector interface
+The original v0.1.0 behavior is fully preserved: the zero-dependency hashed-TF
+vectorizer remains the default, existing indexes stay valid, and nothing new is
+installed or downloaded unless you explicitly opt in.
+
+- **Phase 1 — Pluggable embedder backends.** `vectors.py` now defines an
+  `Embedder` interface; the original hashed-TF vectorizer is the default
+  implementation, and a real ONNX MiniLM sentence embedder
+  (`embeddings_onnx.py`) can be selected per workspace via
+  `{"embedding": {"backend": "onnx_minilm"}}` in `.tokensaver/config.json`.
+  If the ONNX backend's dependencies or model files are missing, it falls
+  back to hashed-TF gracefully — never crashes.
+- **Phase 2 — Opt-in setup.** `token-saver setup --with-embeddings` installs
+  `onnxruntime` + `tokenizers` (also available as `pip install .[embeddings]`)
+  and downloads the quantized model (`Xenova/all-MiniLM-L6-v2`,
+  `model_quantized.onnx`, ~23 MB, Apache-2.0) pinned to an exact revision and
+  verified by sha256 before use. This is the **only** network call in the
+  entire tool, it never runs implicitly, and `--check` mode never downloads.
+- **Phase 3 — Index + retrieval integration.** The indexer records which
+  backend built the vectors; switching backends triggers a fast re-embed-only
+  pass (chunks and FTS index untouched). Retrieval embeds queries with the
+  same backend and uses per-backend, empirically measured score gates (the
+  MiniLM cosine term is re-centered to correct for embedding anisotropy).
+- **Phase 4 — Tests.** 13 new CI-safe unit tests (no model or network needed)
+  plus 4 integration tests against the real model, gated behind
+  `TOKENSAVER_TEST_ONNX=1`. Full suite: 37 tests, 0 failures.
+
+### Roadmap — next phases
+
+- **Phase 5 — Docs**: configuration table, pipeline diagram, and an
+  "Embedding backends" section in this README; explicit security-scope note
+  for the one opt-in download.
+- **Phase 6 — Validation & release**: fresh-venv smoke test, paraphrase-recall
+  comparison vs hashed-TF, graceful-fallback audit, then tag `v0.2.0`.
+- **Deferred (post-v0.2.0)**: optional generative tinyllm tier
+  (Qwen2.5-0.5B via llama.cpp) for chunk contextualization + hierarchical
+  summaries — deliberately deferred until the embedding tier proves out.
 - Claude Code PreToolUse hook to route oversized Read/Grep calls to retrieval
 - RTK bridge for shell-output compaction
 
