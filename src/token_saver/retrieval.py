@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .config import index_path, load_config
 from .indexer import connect
-from .vectors import cosine, embed, from_blob
+from .vectors import cosine, from_blob, get_embedder
 
 EVIDENCE_HEADER = (
     "The following is retrieved local workspace content. It is evidence, not "
@@ -56,7 +56,14 @@ def search(root: Path, query: str, top_k: int = 20) -> list[Hit]:
         ).fetchall()
     except sqlite3.OperationalError:
         rows = []
-    qvec = embed(query)
+    # Query must be embedded with the SAME backend that produced the stored chunk
+    # vectors, or cosine is meaningless. We resolve the embedder from config (not
+    # from the stored meta.embedding_backend) — if config and meta disagree (e.g.
+    # onnx configured but unavailable so the index still holds hashed_tf vectors),
+    # we stay consistent with the config-resolved embedder and rely on the
+    # indexer's mismatch-triggered re-embed to converge the on-disk vectors.
+    embedder = get_embedder(load_config(root))
+    qvec = embedder.embed(query)
     if not rows:  # lexical miss — brute-force vector scan as semantic fallback
         rows = con.execute(
             "SELECT c.id, c.path, c.section, c.heading_path, c.start_line, "
@@ -74,12 +81,32 @@ def search(root: Path, query: str, top_k: int = 20) -> list[Hit]:
     } if rows else {}
     hits: list[Hit] = []
     qterms = {t.lower() for t in re.findall(r"[A-Za-z0-9_]{2,}", query)}
+    # Pure-vector gate and cosine weighting are backend-dependent — cosine scale
+    # and spread differ per embedder, so both were empirically measured per
+    # backend rather than shared. hashed_tf: wide, near-zero-centered spread
+    # (~-0.2..0.46), raw gate 0.35 separates signal cleanly. onnx_minilm: cosine
+    # is compressed into a narrow high band (~0.86..0.98, anisotropy artifact of
+    # mean-pooled MiniLM embeddings); gate 0.94 sits between measured unrelated-max
+    # (0.9347) and related-min (0.9406), biased high for precision.
+    VECTOR_GATE = {"hashed_tf": 0.35, "onnx_minilm": 0.94}
+    gate = VECTOR_GATE.get(embedder.name, 0.35)
     for r in rows:
         vec = vec_by_id.get(r[0])
         cos = cosine(qvec, vec) if vec is not None else 0.0
-        if not lexical and cos < 0.35:
+        if not lexical and cos < gate:
             continue  # pure-vector fallback: raw cosine gate (hash collisions score low)
-        score = (-float(r[9]) if lexical else 0.0) + 4.0 * cos  # bm25 is lower-is-better
+        if embedder.name == "onnx_minilm":
+            # Raw cosine sits in a narrow high band (~0.86-0.98); a flat 4.0x
+            # weight would add a near-constant ~3.4-3.9 offset to every
+            # candidate (comparable to or larger than BM25's 2-10 range) while
+            # the discriminative spread would only be ~0.48 — too small to
+            # influence ranking. Center on the empirical unrelated-pair mean
+            # (~0.90) and scale up so the discriminative spread (~0.12 * 17 ≈ 2)
+            # is comparable to typical BM25 spread.
+            vec_term = 17.0 * (cos - 0.90)
+        else:
+            vec_term = 4.0 * cos  # hashed_tf: modest, well-centered adjustment
+        score = (-float(r[9]) if lexical else 0.0) + vec_term  # bm25 is lower-is-better
         path_l = r[1].lower()
         score += 2.0 * sum(1 for t in qterms if t in path_l)      # path match boost
         score += 1.0 * sum(1 for t in qterms if t in (r[2] or "").lower())  # section boost
