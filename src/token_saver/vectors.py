@@ -14,6 +14,7 @@ import hashlib
 import math
 import re
 import struct
+import sys
 from abc import ABC, abstractmethod
 from array import array
 
@@ -73,19 +74,41 @@ def embed(text: str) -> array:
     return HashedTFEmbedder().embed(text)
 
 
+_FALLBACK_WARNED = False
+
+
+def _warn_onnx_fallback(reason: str) -> None:
+    """Emit exactly one stderr warning per process when the onnx_minilm tier
+    is requested but unavailable and we silently drop to hashed_tf. A silent
+    fallback hides a real semantic-quality regression, so the first occurrence
+    is surfaced; later calls in the same process stay quiet to avoid warning on
+    every index/search invocation."""
+    global _FALLBACK_WARNED
+    if _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED = True
+    print(
+        f"token-saver: onnx_minilm unavailable ({reason}); falling back to "
+        "hashed_tf (semantic quality reduced)",
+        file=sys.stderr,
+    )
+
+
 def get_embedder(config: dict | None = None) -> Embedder:
     """Select an embedder backend from workspace config.
 
     Falls back to hashed_tf when onnx_minilm is requested but its deps or
     model files aren't present yet (they're pulled by
-    `token-saver setup --with-embeddings`, not by this call).
+    `token-saver setup --with-embeddings`, not by this call). The fallback is
+    announced once per process via _warn_onnx_fallback so it is never silent.
     """
     backend = (config or {}).get("embedding", {}).get("backend", "hashed_tf")
     if backend == "onnx_minilm":
         from .embeddings_onnx import EmbedderUnavailable, OnnxMiniLMEmbedder
         try:
             return OnnxMiniLMEmbedder()
-        except EmbedderUnavailable:
+        except EmbedderUnavailable as exc:
+            _warn_onnx_fallback(str(exc))
             return HashedTFEmbedder()
     return HashedTFEmbedder()
 

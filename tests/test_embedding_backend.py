@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import shutil
@@ -185,6 +187,53 @@ class ReembedOnBackendMismatchTest(unittest.TestCase):
             self.assertEqual(self._meta_backend(con), "hashed_tf")
         finally:
             con.close()
+
+
+class OnnxFallbackWarningTest(unittest.TestCase):
+    """The onnx_minilm -> hashed_tf fallback must not be silent.
+
+    Regression: the audited build fell back correctly but printed nothing, so
+    a real semantic-quality drop went unannounced. get_embedder must emit
+    exactly one stderr warning per process on fallback.
+    """
+
+    def setUp(self):
+        import token_saver.vectors as v
+        self._v = v
+        v._FALLBACK_WARNED = False  # reset the per-process latch for a clean read
+        self.addCleanup(setattr, v, "_FALLBACK_WARNED", False)
+
+    def _force_fallback_capture(self):
+        """Force the onnx backend to be unavailable (empty model cache) and
+        capture stderr. Works whether or not onnxruntime is installed: with the
+        deps present the empty cache trips the missing-model path, without them
+        the import error trips first; both funnel through the same fallback."""
+        empty_cache = Path(tempfile.mkdtemp())
+        buf = io.StringIO()
+        try:
+            with patch.dict(
+                "os.environ",
+                {"XDG_CACHE_HOME": str(empty_cache), "LOCALAPPDATA": str(empty_cache)},
+            ), contextlib.redirect_stderr(buf):
+                e = get_embedder({"embedding": {"backend": "onnx_minilm"}})
+        finally:
+            shutil.rmtree(empty_cache, ignore_errors=True)
+        return e, buf.getvalue()
+
+    def test_fallback_emits_one_stderr_warning(self):
+        e, err = self._force_fallback_capture()
+        self.assertIsInstance(e, HashedTFEmbedder)
+        self.assertEqual(e.name, "hashed_tf")
+        self.assertIn("token-saver: onnx_minilm unavailable", err)
+        self.assertIn("falling back to hashed_tf", err)
+        self.assertIn("semantic quality reduced", err)
+        self.assertEqual(err.count("token-saver: onnx_minilm unavailable"), 1)
+
+    def test_warning_is_emitted_once_per_process(self):
+        _, err1 = self._force_fallback_capture()   # warms the latch
+        self.assertIn("token-saver: onnx_minilm unavailable", err1)
+        _, err2 = self._force_fallback_capture()   # latch already set -> silent
+        self.assertEqual(err2, "")
 
 
 if __name__ == "__main__":

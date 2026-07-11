@@ -70,7 +70,7 @@ token-saver setup
 ### Verify the install
 
 ```bash
-token-saver --version        # token-saver 0.2.0.dev5
+token-saver --version        # token-saver 0.2.0
 token-saver setup --check    # [ok] pypdf / [ok] SQLite FTS5 / [ok] vectorizer
 ```
 
@@ -274,7 +274,7 @@ nearest `CLAUDE.md`/`AGENTS.md` → current directory.
 git clone https://github.com/itsarmaanverma/local-token-saver.git
 cd local-token-saver
 pip install -e .
-python3 -m unittest discover -s tests -v     # 37 tests (4 skipped unless
+python3 -m unittest discover -s tests -v     # 40 tests (5 skipped unless
                                               #  TOKENSAVER_TEST_ONNX=1)
 ```
 
@@ -298,7 +298,15 @@ src/token_saver/
 └── workspace.py    # workspace resolution
 ```
 
-## Latest changes — v0.2.0.dev5 (embedding-model tier, in progress)
+## Validation (v0.2.0)
+
+The embedding tier was validated on this machine before release (onnx_minilm, quantized all-MiniLM-L6-v2):
+
+- **Paraphrase recall.** On a 50-doc synthetic corpus with 10 disjoint-vocabulary paraphrase queries (each query shares no lexical tokens with its target, so retrieval rests entirely on the vector half), `onnx_minilm` returns the correct document at rank <= 3 for **7/10** queries vs **2/10** for the default `hashed_tf` — semantic embeddings recover paraphrases that hashed term-frequency cannot.
+- **Graceful fallback.** The two audited fallback cases both exit cleanly (exit 0, no traceback) and now **warn exactly once per process** on stderr: Case A (`onnxruntime`/`tokenizers` not installed) and Case B (deps present, model files absent) each emit `token-saver: onnx_minilm unavailable (...); falling back to hashed_tf (semantic quality reduced)`. The previously silent fallback is fixed.
+- **Gate recalibration.** The `onnx_minilm` pure-vector score gate was recalibrated from **0.94** — which assumed a narrow ~0.86-0.98 cosine band, excluded 25/25 related pairs, and returned empty result sets — to **0.70**, from cosine distributions measured 2026-07-10: related-pair minimum **0.7230** (doc<->doc paraphrase) / **0.7646** (query<->doc), unrelated maximum **0.8311** with the unrelated bulk near the **0.71-0.74** median. 0.70 sits below both related minima with margin so genuinely related queries are no longer dropped, while still gating out the diverse-unrelated mass. The gate applies only in the pure-vector fallback (when BM25 matches nothing).
+
+## Latest changes — v0.2.0 (embedding-model tier)
 
 The original v0.1.0 behavior is fully preserved: the zero-dependency hashed-TF
 vectorizer remains the default, existing indexes stay valid, and nothing new is
@@ -322,9 +330,9 @@ installed or downloaded unless you explicitly opt in.
   pass (chunks and FTS index untouched). Retrieval embeds queries with the
   same backend and uses per-backend, empirically measured score gates (the
   MiniLM cosine term is re-centered to correct for embedding anisotropy).
-- **Phase 4 — Tests.** 13 new CI-safe unit tests (no model or network needed)
-  plus 4 integration tests against the real model, gated behind
-  `TOKENSAVER_TEST_ONNX=1`. Full suite: 37 tests, 0 failures.
+- **Phase 4 — Tests.** 15 new CI-safe unit tests (no model or network needed)
+  plus 5 integration tests against the real model, gated behind
+  `TOKENSAVER_TEST_ONNX=1`. Full suite: 40 tests, 0 failures.
 - **Phase 5 — Docs.** This README now documents both backends: an
   "Embedding backends" comparison section, an updated configuration table
   covering every `DEFAULT_CONFIG` key, a pipeline diagram that shows the
@@ -333,8 +341,9 @@ installed or downloaded unless you explicitly opt in.
 
 ### Roadmap — next phases
 
-- **Phase 6 — Validation & release**: fresh-venv smoke test, paraphrase-recall
-  comparison vs hashed-TF, graceful-fallback audit, then tag `v0.2.0`.
+- **Phase 6 — Validation & release (done in this version)**: fresh-venv smoke
+  test, paraphrase-recall comparison vs hashed-TF, graceful-fallback audit, and
+  gate recalibration — see [Validation (v0.2.0)](#validation-v020) above.
 - **Deferred (post-v0.2.0)**: optional generative tinyllm tier
   (Qwen2.5-0.5B via llama.cpp) for chunk contextualization + hierarchical
   summaries — deliberately deferred until the embedding tier proves out.

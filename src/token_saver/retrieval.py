@@ -81,14 +81,33 @@ def search(root: Path, query: str, top_k: int = 20) -> list[Hit]:
     } if rows else {}
     hits: list[Hit] = []
     qterms = {t.lower() for t in re.findall(r"[A-Za-z0-9_]{2,}", query)}
-    # Pure-vector gate and cosine weighting are backend-dependent — cosine scale
-    # and spread differ per embedder, so both were empirically measured per
-    # backend rather than shared. hashed_tf: wide, near-zero-centered spread
-    # (~-0.2..0.46), raw gate 0.35 separates signal cleanly. onnx_minilm: cosine
-    # is compressed into a narrow high band (~0.86..0.98, anisotropy artifact of
-    # mean-pooled MiniLM embeddings); gate 0.94 sits between measured unrelated-max
-    # (0.9347) and related-min (0.9406), biased high for precision.
-    VECTOR_GATE = {"hashed_tf": 0.35, "onnx_minilm": 0.94}
+    # Pure-vector gate and cosine weighting are backend-dependent -- cosine
+    # scale and spread differ per embedder, so both were empirically
+    # measured per backend rather than shared. hashed_tf: wide,
+    # near-zero-centered spread (~-0.2..0.46), raw gate 0.35 separates
+    # signal cleanly. onnx_minilm: the original 0.94 gate assumed cosine
+    # lived in a narrow ~0.86-0.98 band and excluded 25/25 related pairs,
+    # so the pure-vector fallback returned empty sets. Re-measured
+    # 2026-07-10 (onnx_minilm, quantized all-MiniLM-L6-v2) on two
+    # validation corpora:
+    #   * doc<->doc paraphrase (corpus-large: 25 disjoint-vocabulary pairs
+    #     vs 100 diverse-topic unrelated pairs) -- related min=0.7230
+    #     median=0.8484 max=0.9205; unrelated median=0.7075 max=0.8311.
+    #   * query<->doc (corpus-small: 10 recall queries vs their target
+    #     docs, the distribution this gate actually acts on) -- related
+    #     min=0.7646 median=0.8502 max=0.9015; unrelated median=0.7444.
+    # Both corpora are paraphrase-dense, so the distributions overlap (a
+    # few thematically-adjacent unrelated pairs reach ~0.83) and no
+    # threshold splits them perfectly. Gate 0.84 would drop 4/10 related
+    # query->doc pairs (cosine 0.76-0.84), re-opening the empty-set bug;
+    # on genuinely diverse content the unrelated mass sits well below the
+    # related range. This gate fires ONLY in the pure-vector fallback (BM25
+    # returned nothing), where an empty result is the worst outcome, so it
+    # is biased for recall: 0.70 sits below both related minima (0.7230 /
+    # 0.7646) with margin -- excludes 0/25 and 0/10 related pairs -- while
+    # still dropping the diverse-unrelated bulk (median ~0.71-0.74). BM25
+    # rank plus path/section boosts re-order whatever passes the gate.
+    VECTOR_GATE = {"hashed_tf": 0.35, "onnx_minilm": 0.70}
     gate = VECTOR_GATE.get(embedder.name, 0.35)
     for r in rows:
         vec = vec_by_id.get(r[0])
@@ -96,13 +115,13 @@ def search(root: Path, query: str, top_k: int = 20) -> list[Hit]:
         if not lexical and cos < gate:
             continue  # pure-vector fallback: raw cosine gate (hash collisions score low)
         if embedder.name == "onnx_minilm":
-            # Raw cosine sits in a narrow high band (~0.86-0.98); a flat 4.0x
-            # weight would add a near-constant ~3.4-3.9 offset to every
-            # candidate (comparable to or larger than BM25's 2-10 range) while
-            # the discriminative spread would only be ~0.48 — too small to
-            # influence ranking. Center on the empirical unrelated-pair mean
-            # (~0.90) and scale up so the discriminative spread (~0.12 * 17 ≈ 2)
-            # is comparable to typical BM25 spread.
+            # onnx_minilm cosine spans a moderately-high band (unrelated
+            # bulk ~0.70, related ~0.76-0.92; see the gate note above). A
+            # flat cos*const weight would be dominated by a large
+            # near-constant offset, so subtract a fixed center (0.90 -- a
+            # ranking-neutral offset that shifts every candidate equally)
+            # and scale by 17 so the discriminative spread (~0.15 * 17 ~=
+            # 2.5) is comparable to typical BM25 spread.
             vec_term = 17.0 * (cos - 0.90)
         else:
             vec_term = 4.0 * cos  # hashed_tf: modest, well-centered adjustment
