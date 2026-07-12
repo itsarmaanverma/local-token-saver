@@ -5,4 +5,3 @@ dist/
 build/
 .venv/
 .tokensaver/
-.claude/worktrees/

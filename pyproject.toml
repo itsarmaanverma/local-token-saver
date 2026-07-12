@@ -10,6 +10,32 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = ["pypdf>=4"]
+authors = [{ name = "Armaan" }]
+keywords = [
+    "retrieval",
+    "rag",
+    "mcp",
+    "claude-code",
+    "codex",
+    "context",
+    "embeddings",
+    "code-search",
+    "pdf",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing :: Indexing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4"]  # kept for backward compat; pypdf is now a core dependency
@@ -19,6 +45,10 @@ embeddings = ["onnxruntime>=1.16", "tokenizers>=0.15"]
 token-saver = "token_saver.cli:main"
 token-saver-mcp = "token_saver.mcp_server:main"
 token-saver-proxy = "token_saver.proxy:main"
+
+[project.urls]
+Homepage = "https://github.com/itsarmaanverma/local-token-saver"
+Issues = "https://github.com/itsarmaanverma/local-token-saver/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

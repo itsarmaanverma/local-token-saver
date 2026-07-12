@@ -175,8 +175,8 @@ negative savings are retained.
 
 `token-saver mcp install . --with-proxy` prints a redacted settings and dual
 health-hook preview. It never writes `~/.claude` and has no `--apply` option.
-The live smoke test and PDF imaging/OCR designs are intentionally deferred; see
-[Deferred proxy validation and PDF imaging](docs/NEXT_STEPS.md).
+Apply the previewed URL and hook changes yourself to activate the chain. PDF
+page imaging and OCR reflow are on the [roadmap](ROADMAP.md).
 
 ---
 
@@ -393,74 +393,10 @@ src/token_saver/
 └── workspace.py    # workspace resolution
 ```
 
-## Latest changes — v0.3.0 (pxpipe chain proxy + unified stats)
+## Changelog
 
-- v0.3 is cumulative: it contains the complete v0.2 ONNX embedding release.
-- Added the loopback chain proxy with byte-identical shadow mode, opt-in
-  text-only dedupe, bounded request framing, true SSE chunk streaming, and
-  per-request kill switches.
-- Added retrieval-tool counterfactuals plus correlated token-saver/pxpipe
-  reporting. Cache creation/read prices are applied to both pxpipe sides,
-  failed rows are excluded, losses remain visible, and shadow wins are only
-  projected.
-- Added a redacted, preview-only Claude wiring command and a dual-health hook
-  template. No settings, hooks, or live traffic are changed by the installer.
-- Deferred live rewiring, PDF page imaging, and OCR reflow until their explicit
-  smoke, quality, resource, and fallback gates pass.
-
-## Validation (v0.2.0)
-
-The embedding tier was validated on this machine before release (onnx_minilm, quantized all-MiniLM-L6-v2):
-
-- **Paraphrase recall.** On a 50-doc synthetic corpus with 10 disjoint-vocabulary paraphrase queries (each query shares no lexical tokens with its target, so retrieval rests entirely on the vector half), `onnx_minilm` returns the correct document at rank <= 3 for **7/10** queries vs **2/10** for the default `hashed_tf` — semantic embeddings recover paraphrases that hashed term-frequency cannot.
-- **Graceful fallback.** The two audited fallback cases both exit cleanly (exit 0, no traceback) and now **warn exactly once per process** on stderr: Case A (`onnxruntime`/`tokenizers` not installed) and Case B (deps present, model files absent) each emit `token-saver: onnx_minilm unavailable (...); falling back to hashed_tf (semantic quality reduced)`. The previously silent fallback is fixed.
-- **Gate recalibration.** The `onnx_minilm` pure-vector score gate was recalibrated from **0.94** — which assumed a narrow ~0.86-0.98 cosine band, excluded 25/25 related pairs, and returned empty result sets — to **0.70**, from cosine distributions measured 2026-07-10: related-pair minimum **0.7230** (doc<->doc paraphrase) / **0.7646** (query<->doc), unrelated maximum **0.8311** with the unrelated bulk near the **0.71-0.74** median. 0.70 sits below both related minima with margin so genuinely related queries are no longer dropped, while still gating out the diverse-unrelated mass. The gate applies only in the pure-vector fallback (when BM25 matches nothing).
-
-## Latest changes — v0.2.0 (embedding-model tier)
-
-The original v0.1.0 behavior is fully preserved: the zero-dependency hashed-TF
-vectorizer remains the default, existing indexes stay valid, and nothing new is
-installed or downloaded unless you explicitly opt in.
-
-- **Phase 1 — Pluggable embedder backends.** `vectors.py` now defines an
-  `Embedder` interface; the original hashed-TF vectorizer is the default
-  implementation, and a real ONNX MiniLM sentence embedder
-  (`embeddings_onnx.py`) can be selected per workspace via
-  `{"embedding": {"backend": "onnx_minilm"}}` in `.tokensaver/config.json`.
-  If the ONNX backend's dependencies or model files are missing, it falls
-  back to hashed-TF gracefully — never crashes.
-- **Phase 2 — Opt-in setup.** `token-saver setup --with-embeddings` installs
-  `onnxruntime` + `tokenizers` (also available as `pip install .[embeddings]`)
-  and downloads the quantized model (`Xenova/all-MiniLM-L6-v2`,
-  `model_quantized.onnx`, ~23 MB, Apache-2.0) pinned to an exact revision and
-  verified by sha256 before use. This is the v0.2 retrieval core's only
-  network call; it never runs implicitly, and `--check` mode never downloads.
-- **Phase 3 — Index + retrieval integration.** The indexer records which
-  backend built the vectors; switching backends triggers a fast re-embed-only
-  pass (chunks and FTS index untouched). Retrieval embeds queries with the
-  same backend and uses per-backend, empirically measured score gates (the
-  MiniLM cosine term is re-centered to correct for embedding anisotropy).
-- **Phase 4 — Tests.** 15 new CI-safe unit tests (no model or network needed)
-  plus 5 integration tests against the real model, gated behind
-  `TOKENSAVER_TEST_ONNX=1`. Full suite: 40 tests, 0 failures.
-- **Phase 5 — Docs.** This README now documents both backends: an
-  "Embedding backends" comparison section, an updated configuration table
-  covering every `DEFAULT_CONFIG` key, a pipeline diagram that shows the
-  pluggable vector stage, and an explicit, scoped security note about the
-  one opt-in model download.
-
-### Roadmap — next phases
-
-- **Phase 6 — Validation & release (done in this version)**: fresh-venv smoke
-  test, paraphrase-recall comparison vs hashed-TF, graceful-fallback audit, and
-  gate recalibration — see [Validation (v0.2.0)](#validation-v020) above.
-- **Deferred (post-v0.2.0)**: optional generative tinyllm tier
-  (Qwen2.5-0.5B via llama.cpp) for chunk contextualization + hierarchical
-  summaries — deliberately deferred until the embedding tier proves out.
-- Claude Code PreToolUse hook to route oversized Read/Grep calls to retrieval
-- RTK bridge for shell-output compaction
-- PDF page imaging and benchmark-gated OCR reflow; see
-  [deferred next steps](docs/NEXT_STEPS.md)
+See [CHANGELOG.md](CHANGELOG.md) for release notes and validation results, and
+[ROADMAP.md](ROADMAP.md) for planned work.
 
 ## License
 
