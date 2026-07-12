@@ -20,9 +20,16 @@ token-saver-proxy
 
 # Terminal 3: health and a session-scoped Claude test
 curl -fsS http://127.0.0.1:47820/health
-ANTHROPIC_BASE_URL=http://127.0.0.1:47820 claude -p "Reply with OK." < /dev/null
+claude -p --settings '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:47820"}}' \
+  "Reply with OK." < /dev/null
 token-saver stats .
 ```
+
+> **Why `--settings` and not a shell export:** if `~/.claude/settings.json`
+> contains an `env` block, its `ANTHROPIC_BASE_URL` overrides the shell
+> environment, so a plain `ANTHROPIC_BASE_URL=... claude -p` silently bypasses
+> the chain. The session-scoped `--settings` JSON wins over the settings file
+> and still leaves it untouched.
 
 Pass criteria:
 
@@ -38,6 +45,29 @@ Pass criteria:
 After that gate, inspect `token-saver mcp install . --with-proxy`. It is a
 preview only. Apply its targeted URL and hook changes manually, then repeat the
 same gate before considering `TOKEN_SAVER_FILTER=dedupe`.
+
+### Gate results (2026-07-12)
+
+Both gates **passed** with `TOKEN_SAVER_FILTER=shadow`:
+
+1. **Session-scoped gate** (`--settings` override): Claude replied normally;
+   the same request (`req_body_sha8 8bdfdf20`, status 200) appears in
+   `~/.local/state/token-saver/events.jsonl` and `~/.pxpipe/events.jsonl`;
+   `token-saver stats .` reported exact-hash matches, zero savings, shadow
+   candidates only in `projected`; `~/.claude/settings.json` untouched.
+2. **Default-config repeat gate**, after applying the `--with-proxy` URL
+   change (`env.ANTHROPIC_BASE_URL` → `http://127.0.0.1:47820`): plain
+   `claude -p` with no override succeeded (`req_body_sha8 670e7b79`,
+   status 200 in both logs; 6 exact-hash matched rows).
+
+Root cause of the original inactive integration: the `settings.json` `env`
+block pinned `ANTHROPIC_BASE_URL` to pxpipe (`:47821`) directly, bypassing
+token-saver. The wiring now points Claude at token-saver (`:47820`), which
+forwards to pxpipe. The proposed `SessionStart` hook swap
+(`pxpipe-check.sh` → `token-saver-proxy-check.sh`, auto-starts both proxies)
+is written to `~/.claude/hooks/token-saver-proxy-check.sh` but not yet
+activated in `settings.json`; until it is, token-saver-proxy must be running
+before new Claude sessions start.
 
 ## 2. PDF pages as image blocks
 
