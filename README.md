@@ -72,7 +72,7 @@ token-saver setup
 ### Verify the install
 
 ```bash
-token-saver --version        # token-saver 0.3.0.dev1
+token-saver --version        # token-saver 0.3.0
 token-saver setup --check    # [ok] pypdf / [ok] SQLite FTS5 / [ok] vectorizer
 ```
 
@@ -393,7 +393,7 @@ src/token_saver/
 └── workspace.py    # workspace resolution
 ```
 
-## Latest changes - v0.3.0.dev1
+## Latest changes — v0.3.0 (pxpipe chain proxy + unified stats)
 
 - v0.3 is cumulative: it contains the complete v0.2 ONNX embedding release.
 - Added the loopback chain proxy with byte-identical shadow mode, opt-in
