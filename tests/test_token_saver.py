@@ -2,16 +2,20 @@
 from __future__ import annotations
 
 import json
+import io
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from token_saver.config import init_workspace, load_config
+from token_saver.cli import main as cli_main
 from token_saver.indexer import index_workspace
 from token_saver.mcp_server import Server
 from token_saver.retrieval import get_source_slice, retrieve_context, search
 from token_saver.summarize import summarize_file, summarize_folder
+from token_saver.stats import iter_events, workspace_log_path
 from token_saver.workspace import resolve_workspace
 
 
@@ -112,6 +116,7 @@ class TokenSaverTest(unittest.TestCase):
         tools = srv.handle({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         names = {t["name"] for t in tools["result"]["tools"]}
         self.assertIn("retrieve_context", names)
+        self.assertIn("stats", names)
         call = srv.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
                            "params": {"name": "retrieve_context",
                                       "arguments": {"task": "renewal obligations"}}})
@@ -120,6 +125,46 @@ class TokenSaverTest(unittest.TestCase):
         bad = srv.handle({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
                           "params": {"name": "nope", "arguments": {}}})
         self.assertTrue(bad["result"].get("isError"))
+
+    def test_cli_and_mcp_record_tool_counterfactuals_once(self):
+        log = workspace_log_path(self.tmp)
+        log.unlink(missing_ok=True)
+
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(cli_main(["search", "renewal", str(self.tmp)]), 0)
+        self.assertIn("contract.md", output.getvalue())
+
+        srv = Server(str(self.tmp))
+        calls = [
+            ("retrieve_context", {"task": "renewal obligations"}),
+            ("semantic_search", {"query": "authenticate credentials"}),
+            ("summarize_file", {"file": "docs/contract.md"}),
+            ("summarize_folder", {"folder": "docs"}),
+        ]
+        for index, (name, arguments) in enumerate(calls, 1):
+            response = srv.handle({
+                "jsonrpc": "2.0", "id": index, "method": "tools/call",
+                "params": {"name": name, "arguments": arguments},
+            })
+            self.assertFalse(response["result"].get("isError"))
+
+        rows = list(iter_events(log))
+        self.assertEqual(len(rows), 5)
+        self.assertEqual(
+            [row["tool"] for row in rows],
+            ["semantic_search", *[name for name, _ in calls]],
+        )
+        self.assertTrue(all(row["counterfactual_tokens"] > 0 for row in rows))
+        self.assertTrue(all(row["returned_tokens"] > 0 for row in rows))
+
+        before = log.read_bytes()
+        stats_response = srv.handle({
+            "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+            "params": {"name": "stats", "arguments": {}},
+        })
+        self.assertIn("retrieval tools", stats_response["result"]["content"][0]["text"])
+        self.assertEqual(log.read_bytes(), before)
 
 
 def make_minimal_pdf(text: str) -> bytes:

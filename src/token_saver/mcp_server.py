@@ -1,7 +1,6 @@
 """Minimal MCP stdio server (newline-delimited JSON-RPC 2.0), zero dependencies.
 
-Exposes: workspace_status, select_workspace, index_workspace, retrieve_context,
-semantic_search, summarize_file, summarize_folder, get_source_slice, advise.
+Exposes workspace management, retrieval, summaries, source slices, and stats.
 """
 from __future__ import annotations
 
@@ -14,6 +13,8 @@ from . import __version__
 from .config import index_path, init_workspace
 from .indexer import connect, index_stats, index_workspace
 from .retrieval import get_source_slice, retrieve_context, search
+from .stats import record_tool_event
+from .stats_report import build_report, format_report
 from .summarize import advise, summarize_file, summarize_folder
 from .workspace import resolve_workspace
 
@@ -58,6 +59,9 @@ TOOLS: dict[str, dict] = {
     "advise": _obj(
         "Recommend retrieval vs cached full injection for this workspace size.",
         {"path": S}, []),
+    "stats": _obj(
+        "Show retrieval, token-saver proxy, and matched pxpipe savings.",
+        {"path": S, "proxy_log": S, "pxpipe": S}, []),
 }
 
 
@@ -88,20 +92,48 @@ class Server:
             init_workspace(root)
             return json.dumps(index_workspace(root, force=bool(args.get("force"))))
         if name == "retrieve_context":
-            return retrieve_context(root, args["task"], max_tokens=max_tokens)
+            result = retrieve_context(root, args["task"], max_tokens=max_tokens)
+            return record_tool_event(
+                root, name, {"task": args["task"], "max_tokens": max_tokens}, result
+            )
         if name == "semantic_search":
             hits = search(root, args["query"], top_k=top_k)
-            return "\n".join(
+            result = "\n".join(
                 f"{h.score:.2f} {h.path}:{h.start_line}-{h.end_line} "
                 f"[{h.section}] {h.text[:160]!r}" for h in hits) or "No matches."
+            return record_tool_event(
+                root,
+                name,
+                {"query": args["query"], "top_k": top_k},
+                result,
+                paths=[hit.path for hit in hits],
+            )
         if name == "summarize_file":
-            return summarize_file(root, args["file"], focus=args.get("focus"))
+            result = summarize_file(root, args["file"], focus=args.get("focus"))
+            return record_tool_event(
+                root,
+                name,
+                {"file": args["file"], "focus": args.get("focus")},
+                result,
+                paths=[args["file"]],
+            )
         if name == "summarize_folder":
-            return summarize_folder(root, args.get("folder"), focus=args.get("focus"))
+            result = summarize_folder(root, args.get("folder"), focus=args.get("focus"))
+            return record_tool_event(
+                root,
+                name,
+                {"folder": args.get("folder"), "focus": args.get("focus")},
+                result,
+                folder=args.get("folder"),
+            )
         if name == "get_source_slice":
             return get_source_slice(root, args["file"], start or 1, end)
         if name == "advise":
             return advise(root)
+        if name == "stats":
+            return format_report(build_report(
+                root, proxy_log=args.get("proxy_log"), pxpipe_log=args.get("pxpipe")
+            ))
         raise ValueError(f"Unknown tool: {name}")
 
     def handle(self, msg: dict) -> dict | None:

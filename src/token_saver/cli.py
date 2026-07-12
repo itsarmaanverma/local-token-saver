@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from . import __version__
 from .config import index_path, init_workspace, load_config
 from .indexer import connect, index_stats, index_workspace
-from .install import install_claude, install_codex, install_protocol
+from .install import install_claude, install_codex, install_protocol, preview_proxy_wiring
 from .retrieval import get_source_slice, retrieve_context, search
+from .stats import record_tool_event
+from .stats_report import build_report, format_report
 from .summarize import advise, summarize_file, summarize_folder
 from .workspace import resolve_workspace
 
@@ -65,18 +68,36 @@ def cmd_status(args) -> int:
 
 def cmd_search(args) -> int:
     root = _ws(args)
-    for h in search(root, args.query, top_k=args.top):
+    hits = search(root, args.query, top_k=args.top)
+    lines = []
+    for h in hits:
         loc = f"{h.path}:{h.start_line}-{h.end_line}" if not h.page else f"{h.path} p.{h.page}"
         sec = f" [{h.section}]" if h.section else ""
-        print(f"{h.score:7.2f}  {loc}{sec}")
+        lines.append(f"{h.score:7.2f}  {loc}{sec}")
         if args.verbose:
-            print("    " + h.text[:200].replace("\n", " ") + "…")
+            lines.append("    " + h.text[:200].replace("\n", " ") + "…")
+    result = "\n".join(lines)
+    if result:
+        print(result)
+    record_tool_event(
+        root,
+        "semantic_search",
+        {"query": args.query, "top_k": args.top},
+        result,
+        paths=[hit.path for hit in hits],
+    )
     return 0
 
 
 def cmd_retrieve(args) -> int:
     root = _ws(args)
-    print(retrieve_context(root, args.task, max_tokens=args.max_tokens))
+    result = retrieve_context(root, args.task, max_tokens=args.max_tokens)
+    print(record_tool_event(
+        root,
+        "retrieve_context",
+        {"task": args.task, "max_tokens": args.max_tokens},
+        result,
+    ))
     return 0
 
 
@@ -92,10 +113,24 @@ def cmd_summarize(args) -> int:
     else:
         rel = str(target)
     if (root / rel).is_dir() or args.target in (".", ""):
-        print(summarize_folder(root, None if args.target in (".", "") else rel,
-                               focus=args.focus))
+        folder = None if args.target in (".", "") else rel
+        result = summarize_folder(root, folder, focus=args.focus)
+        print(record_tool_event(
+            root,
+            "summarize_folder",
+            {"folder": folder, "focus": args.focus},
+            result,
+            folder=folder,
+        ))
     else:
-        print(summarize_file(root, rel, focus=args.focus))
+        result = summarize_file(root, rel, focus=args.focus)
+        print(record_tool_event(
+            root,
+            "summarize_file",
+            {"file": rel, "focus": args.focus},
+            result,
+            paths=[rel],
+        ))
     return 0
 
 
@@ -122,12 +157,22 @@ def cmd_setup(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_stats(args) -> int:
+    report = build_report(_ws(args), proxy_log=args.proxy_log, pxpipe_log=args.pxpipe)
+    print(json.dumps(report, indent=2) if args.json else format_report(report))
+    return 0
+
+
 def cmd_mcp(args) -> int:
     root = _ws(args)
-    init_workspace(root)
-    if not (args.claude or args.codex):
-        print("Specify --claude and/or --codex", file=sys.stderr)
+    if not (args.claude or args.codex or args.with_proxy):
+        print("Specify --claude, --codex, and/or --with-proxy", file=sys.stderr)
         return 2
+    if args.protocol and not (args.claude or args.codex):
+        print("--protocol requires --claude and/or --codex", file=sys.stderr)
+        return 2
+    if args.claude or args.codex:
+        init_workspace(root)
     if args.claude:
         print(install_claude(root))
     if args.codex:
@@ -135,6 +180,8 @@ def cmd_mcp(args) -> int:
     if args.protocol:
         target = "both" if (args.claude and args.codex) else ("claude" if args.claude else "codex")
         print(install_protocol(root, target))
+    if args.with_proxy:
+        print(preview_proxy_wiring())
     return 0
 
 
@@ -197,6 +244,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-embeddings-model", action="store_true", help="skip downloading model files even with --with-embeddings (deps only)")
     sp.set_defaults(fn=cmd_setup)
 
+    sp = sub.add_parser("stats", help="show retrieval, proxy, and pxpipe token savings")
+    sp.add_argument("path", nargs="?", help="workspace for retrieval-tool events")
+    sp.add_argument("--proxy-log", default=None, help="token-saver proxy JSONL path")
+    sp.add_argument("--pxpipe", default=None, help="pxpipe JSONL path (default ~/.pxpipe/events.jsonl)")
+    sp.add_argument("--json", action="store_true", help="emit the merged report as JSON")
+    sp.set_defaults(fn=cmd_stats)
+
     sp = sub.add_parser("mcp", help="install MCP server into agent configs")
     sp.add_argument("action", choices=["install"])
     sp.add_argument("path", nargs="?")
@@ -206,6 +260,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Codex: write project .codex/config.toml instead of global")
     sp.add_argument("--protocol", action="store_true",
                     help="also append protocol block to CLAUDE.md/AGENTS.md")
+    sp.add_argument("--with-proxy", action="store_true",
+                    help="preview Claude settings + dual proxy health hook; never writes")
     sp.set_defaults(fn=cmd_mcp)
     return p
 

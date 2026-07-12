@@ -8,8 +8,8 @@ model context**. Instead of reading a 200k-token PDF or grepping a whole repo,
 the agent queries a local `.tokensaver/` index and receives a compact, cited
 evidence pack — typically 10–50× smaller than the raw content.
 
-- 🔒 **Fully local.** No telemetry, no uploads, no API keys. The index is a
-  SQLite file inside your folder.
+- 🔒 **Local retrieval core.** Indexes, search, summaries, and tool telemetry
+  stay in a SQLite database/JSONL files on your machine. API keys are not stored.
 - 📄 **Automatic PDF → Markdown → vector pipeline.** Script-based, zero LLM —
   runs on every index.
 - 🔍 **Hybrid retrieval.** SQLite FTS5 (BM25) + pluggable vector backend
@@ -19,6 +19,8 @@ evidence pack — typically 10–50× smaller than the raw content.
   Claude Code (`.mcp.json`) and Codex (`~/.codex/config.toml`).
 - 🗂 **Works on any folder.** Git repos, legal document dumps, research paper
   collections, log folders — a git repo is *not* required.
+- **Optional chain proxy.** A loopback proxy can filter repeated tool results
+  before pxpipe renders dense context as images, with per-stage savings stats.
 
 ---
 
@@ -30,8 +32,8 @@ evidence pack — typically 10–50× smaller than the raw content.
 | `pip` | for installation |
 | `pypdf` | **installed automatically** as a dependency |
 
-No other dependencies for the default setup. The default vectorizer is pure
-standard library — no model downloads, no network access, deterministic
+No other dependencies for the default retrieval setup. The default vectorizer is pure
+standard library — no model downloads or API calls, deterministic
 across machines. An optional `onnx_minilm` backend for real semantic
 embeddings is available (see
 [Embedding backends](#embedding-backends)) and pulls in `onnxruntime` +
@@ -70,7 +72,7 @@ token-saver setup
 ### Verify the install
 
 ```bash
-token-saver --version        # token-saver 0.2.0
+token-saver --version        # token-saver 0.3.0.dev1
 token-saver setup --check    # [ok] pypdf / [ok] SQLite FTS5 / [ok] vectorizer
 ```
 
@@ -95,6 +97,86 @@ token-saver mcp install . --claude --codex --protocol
 Now ask your agent something like *"Summarize the renewal obligations in this
 folder."* Instead of reading every file, it calls `retrieve_context` and works
 from an ~8k-token evidence pack with citations like `contract.pdf, p. 12`.
+
+## Optional pxpipe chain proxy
+
+The v0.3 preview adds a stdlib loopback proxy that composes with
+[pxpipe](https://github.com/teamchong/pxpipe). pxpipe remains a separate
+package and owns image rendering and its downstream billing log.
+
+```text
+Claude Code
+    | ANTHROPIC_BASE_URL=http://127.0.0.1:47820
+    v
+token-saver proxy :47820       text dedupe + stage stats
+    | TOKEN_SAVER_UPSTREAM=http://127.0.0.1:47821
+    v
+pxpipe :47821                  text-to-image transform + billing stats
+    |
+    v
+Anthropic API
+```
+
+Start both processes explicitly while evaluating the chain:
+
+```bash
+npx -y pxpipe-proxy
+TOKEN_SAVER_FILTER=shadow token-saver-proxy
+curl -fsS http://127.0.0.1:47820/health
+```
+
+`shadow` is the default and forwards `/v1/messages` request bytes unchanged.
+When a duplicate candidate exists, it probes `count_tokens` on the original and
+hypothetical filtered bodies so projected savings are measured without changing
+the request.
+
+| Mode | Behavior |
+|---|---|
+| `off` | Raw passthrough; no filtering probes |
+| `shadow` | Default; byte-identical forward plus projected dedupe measurement |
+| `dedupe` | Opt-in; later identical plain-text `tool_result` bodies over 2,000 characters become stable hash stubs |
+| `retrieve` | Experimental scaffold; currently dedupe plus a no-op retrieval hook, with no additional compression |
+
+Configure with CLI flags or environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `TOKEN_SAVER_PORT` | `47820` | Loopback listen port |
+| `TOKEN_SAVER_UPSTREAM` | `http://127.0.0.1:47821` | pxpipe or another HTTP(S) upstream |
+| `TOKEN_SAVER_FILTER` | `shadow` | `off`, `shadow`, `dedupe`, or `retrieve` |
+| `TOKEN_SAVER_MAX_BODY_MB` | `128` | Buffered request-body limit |
+
+Per-request escape: add `x-token-saver: off`. Global escape: set
+`TOKEN_SAVER_FILTER=off` or point `ANTHROPIC_BASE_URL` back to pxpipe on 47821.
+Active modes deterministically reserialize message JSON, so the first mode
+change can miss an existing prompt cache; stable later requests transform to
+stable bytes. Mixed-media or metadata-bearing tool results are never deduped.
+
+The dashboard is at `http://127.0.0.1:47820/`. Stats are stored in:
+
+- `.tokensaver/events.jsonl`: retrieval/search/summary counterfactuals.
+- `~/.local/state/token-saver/events.jsonl`: token-saver proxy rows.
+- `~/.pxpipe/events.jsonl`: pxpipe rows, read but not written by token-saver.
+
+```bash
+token-saver stats .                           # table
+token-saver stats . --json                    # structured report
+token-saver stats . --pxpipe /path/events.jsonl
+```
+
+Rows are matched one-to-one. Passthrough rows use the exact request hash;
+pxpipe 0.8 hashes its transformed outgoing body on compressed rows, so those use
+a bounded model/completion-time match only when there is one candidate. Ambiguous
+same-model windows are skipped. The report exposes exact, time, and skipped
+counts. It keeps shadow reductions in `projected`, uses original-vs-filtered probes
+for token-saver, and replays pxpipe's cache-aware warm/cold counterfactual. This
+avoids adding a matched pxpipe row twice. Dollar values are estimates;
+negative savings are retained.
+
+`token-saver mcp install . --with-proxy` prints a redacted settings and dual
+health-hook preview. It never writes `~/.claude` and has no `--apply` option.
+The live smoke test and PDF imaging/OCR designs are intentionally deferred; see
+[Deferred proxy validation and PDF imaging](docs/NEXT_STEPS.md).
 
 ---
 
@@ -190,7 +272,10 @@ token-saver retrieve "task" [--max-tokens N]   # budgeted, cited context pack
 token-saver summarize <file|dir> [--focus X]   # extractive summary
 token-saver slice <file> [start] [end]         # exact line range of a file
 token-saver advise                             # retrieve vs cached-injection advice
+token-saver stats [path] [--pxpipe FILE] [--json]
 token-saver mcp install <path> --claude --codex [--protocol] [--project]
+token-saver mcp install [path] --with-proxy    # preview only; no writes
+token-saver-proxy [--mode MODE] [--upstream URL] [--port N]
 ```
 
 ## MCP tools exposed to agents
@@ -203,6 +288,7 @@ token-saver mcp install <path> --claude --codex [--protocol] [--project]
 | `get_source_slice` | Exact line range, after retrieval identified it |
 | `workspace_status` / `select_workspace` / `index_workspace` | Index management |
 | `advise` | Retrieve vs cached-full-injection recommendation |
+| `stats` | Per-stage retrieval, token-saver proxy, and matched pxpipe savings |
 
 The installed protocol block instructs agents: *call `retrieve_context` before
 reading large files; read exact slices only after retrieval identifies them;
@@ -255,12 +341,17 @@ and root-anchored patterns (`/build/`) work as in git.
 - Every retrieval pack is wrapped in an *evidence-not-instructions* preamble
   so agents don't execute prompts hidden inside indexed files.
 - Path-escape guard: file access is confined to the workspace root.
-- Core indexing, search, and retrieval never make a network call. The
-  **only** network access in the entire tool is the explicit, one-time
-  model download triggered by `token-saver setup --with-embeddings`
-  (opt-in, pinned to an exact HuggingFace revision, sha256-verified before
-  use). `setup --check` never downloads. If you never run
-  `--with-embeddings`, nothing in this tool ever touches the network.
+- Core indexing, search, and retrieval never call an API. The ONNX setup has
+  one explicit, pinned, sha256-verified model download; `setup --check` never
+  downloads.
+- The optional proxy intentionally relays the caller's API traffic to
+  `TOKEN_SAVER_UPSTREAM` and makes `count_tokens` probes for candidate
+  measurements. It binds only to `127.0.0.1`, does not log headers or request
+  bodies, and records usage metadata locally. Review pxpipe's separate logging
+  policy before enabling the chain.
+- Active filtering is off unless `dedupe` or `retrieve` is selected. The
+  `x-token-saver: off` request header and `TOKEN_SAVER_FILTER=off` are kill
+  switches.
 
 ## Workspace resolution
 
@@ -274,8 +365,8 @@ nearest `CLAUDE.md`/`AGENTS.md` → current directory.
 git clone https://github.com/itsarmaanverma/local-token-saver.git
 cd local-token-saver
 pip install -e .
-python3 -m unittest discover -s tests -v     # 40 tests (5 skipped unless
-                                              #  TOKENSAVER_TEST_ONNX=1)
+python3 -m pytest -q                          # core + proxy/stats tests
+TOKENSAVER_TEST_ONNX=1 python3 -m pytest -q  # include real-model gates
 ```
 
 Project layout:
@@ -288,6 +379,10 @@ src/token_saver/
 ├── convert.py      # PDF → Markdown mirrors (cached)
 ├── vectors.py      # embedder interface + hashed-TF backend (pure stdlib)
 ├── embeddings_onnx.py  # optional ONNX MiniLM embedder backend (opt-in)
+├── proxy.py        # loopback HTTP transport + streaming
+├── proxy_support.py # deterministic filters + dashboard rendering
+├── stats.py        # JSONL schema, tool events, cache-aware accounting
+├── stats_report.py # stage correlation + CLI/MCP report
 ├── retrieval.py    # hybrid search + budgeted packing
 ├── parsers.py      # per-filetype structure-aware chunking
 ├── summarize.py    # extractive summaries + advise
@@ -297,6 +392,21 @@ src/token_saver/
 ├── config.py       # workspace config
 └── workspace.py    # workspace resolution
 ```
+
+## Latest changes - v0.3.0.dev1
+
+- v0.3 is cumulative: it contains the complete v0.2 ONNX embedding release.
+- Added the loopback chain proxy with byte-identical shadow mode, opt-in
+  text-only dedupe, bounded request framing, true SSE chunk streaming, and
+  per-request kill switches.
+- Added retrieval-tool counterfactuals plus correlated token-saver/pxpipe
+  reporting. Cache creation/read prices are applied to both pxpipe sides,
+  failed rows are excluded, losses remain visible, and shadow wins are only
+  projected.
+- Added a redacted, preview-only Claude wiring command and a dual-health hook
+  template. No settings, hooks, or live traffic are changed by the installer.
+- Deferred live rewiring, PDF page imaging, and OCR reflow until their explicit
+  smoke, quality, resource, and fallback gates pass.
 
 ## Validation (v0.2.0)
 
@@ -323,8 +433,8 @@ installed or downloaded unless you explicitly opt in.
   `onnxruntime` + `tokenizers` (also available as `pip install .[embeddings]`)
   and downloads the quantized model (`Xenova/all-MiniLM-L6-v2`,
   `model_quantized.onnx`, ~23 MB, Apache-2.0) pinned to an exact revision and
-  verified by sha256 before use. This is the **only** network call in the
-  entire tool, it never runs implicitly, and `--check` mode never downloads.
+  verified by sha256 before use. This is the v0.2 retrieval core's only
+  network call; it never runs implicitly, and `--check` mode never downloads.
 - **Phase 3 — Index + retrieval integration.** The indexer records which
   backend built the vectors; switching backends triggers a fast re-embed-only
   pass (chunks and FTS index untouched). Retrieval embeds queries with the
@@ -349,6 +459,8 @@ installed or downloaded unless you explicitly opt in.
   summaries — deliberately deferred until the embedding tier proves out.
 - Claude Code PreToolUse hook to route oversized Read/Grep calls to retrieval
 - RTK bridge for shell-output compaction
+- PDF page imaging and benchmark-gated OCR reflow; see
+  [deferred next steps](docs/NEXT_STEPS.md)
 
 ## License
 
