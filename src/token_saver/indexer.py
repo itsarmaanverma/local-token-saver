@@ -9,6 +9,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,6 +24,10 @@ from .vectors import Embedder, get_embedder, to_blob
 _PAGE_IN_HEADING = re.compile(r"^Page (\d+)$")
 _REEMBED_BATCH_SIZE = 500
 _FINGERPRINT_SAMPLE_BYTES = 4096
+
+
+class UnsafeWorkspacePath(OSError):
+    """A path cannot be read without crossing the configured workspace boundary."""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -117,33 +122,117 @@ def _sample_fingerprint(path: Path, size: int) -> str:
     return h.hexdigest()
 
 
-def scan_files(root: Path, max_bytes: int, follow_symlinks: bool) -> Iterator[Path]:
+def _is_link_or_reparse(path: Path) -> bool:
+    """Recognize POSIX links plus Windows junction/reparse-point entries."""
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0) & reparse_flag)
+
+
+def _is_within(root: Path, target: Path) -> bool:
+    try:
+        return os.path.commonpath((os.path.normcase(str(root)),
+                                   os.path.normcase(str(target)))) == os.path.normcase(str(root))
+    except ValueError:  # different Windows drives
+        return False
+
+
+def _authorized_read_path(root: Path, path: Path, follow_symlinks: bool) -> Path:
+    """Resolve a logical workspace path under the active link policy."""
+    resolved_root = root.resolve(strict=True)
+    try:
+        path.absolute().relative_to(root.absolute())
+    except ValueError as exc:
+        raise UnsafeWorkspacePath(f"path escapes workspace: {path}") from exc
+
+    if not follow_symlinks:
+        relative = path.absolute().relative_to(root.absolute())
+        current = root.absolute()
+        for part in relative.parts:
+            current /= part
+            if _is_link_or_reparse(current):
+                raise UnsafeWorkspacePath(f"linked path disabled: {path}")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise UnsafeWorkspacePath(f"unresolvable workspace path: {path}") from exc
+    if not _is_within(resolved_root, resolved):
+        raise UnsafeWorkspacePath(f"path target escapes workspace: {path}")
+    return resolved
+
+
+def _has_hidden_directory(rel: str) -> bool:
+    parts = Path(rel).parts
+    return any(part.startswith(".") and part != ".github" for part in parts[:-1])
+
+
+def scan_files(root: Path, max_bytes: int, follow_symlinks: bool, *,
+               unsafe_files: set[str] | None = None,
+               unsafe_dirs: set[str] | None = None) -> Iterator[Path]:
     """Walk the workspace, yielding matched file paths one at a time.
 
     An iterator rather than a materialized list, so a caller can start
     indexing before the walk finishes and never holds every path in memory
     at once (matters for very large workspaces).
     """
+    root = root.absolute()
+    resolved_root = root.resolve(strict=True)
     matcher = load_matcher(root)
+    seen_dirs = {os.path.normcase(str(resolved_root))}
+    seen_files: set[str] = set()
+    unsafe_files = unsafe_files if unsafe_files is not None else set()
+    unsafe_dirs = unsafe_dirs if unsafe_dirs is not None else set()
     for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
         rel_dir = Path(dirpath).relative_to(root).as_posix()
         if rel_dir == ".":
             rel_dir = ""
-        dirnames[:] = [
-            d for d in dirnames
-            if (not d.startswith(".") or d in (".github",))
-            and not matcher.matches_dir(f"{rel_dir}/{d}" if rel_dir else d)
-        ]
-        for fname in filenames:
+        allowed_dirs = []
+        for dirname in sorted(dirnames):
+            logical = Path(dirpath) / dirname
+            rel = f"{rel_dir}/{dirname}" if rel_dir else dirname
+            if (dirname.startswith(".") and dirname != ".github") or matcher.matches_dir(rel):
+                continue
+            try:
+                target = _authorized_read_path(root, logical, follow_symlinks)
+            except UnsafeWorkspacePath:
+                unsafe_dirs.add(rel)
+                continue
+            target_rel = target.relative_to(resolved_root).as_posix()
+            if _has_hidden_directory(f"{target_rel}/placeholder") or matcher.matches_dir(target_rel):
+                continue
+            identity = os.path.normcase(str(target))
+            if identity in seen_dirs:
+                continue
+            seen_dirs.add(identity)
+            allowed_dirs.append(dirname)
+        dirnames[:] = allowed_dirs
+
+        for fname in sorted(filenames):
             p = Path(dirpath) / fname
             rel = f"{rel_dir}/{fname}" if rel_dir else fname
             if matcher.matches_file(rel):
                 continue
             try:
-                st = p.stat()
+                target = _authorized_read_path(root, p, follow_symlinks)
+            except UnsafeWorkspacePath:
+                unsafe_files.add(rel)
+                continue
+            target_rel = target.relative_to(resolved_root).as_posix()
+            if _has_hidden_directory(target_rel) or matcher.matches_file(target_rel):
+                continue
+            identity = os.path.normcase(str(target))
+            if follow_symlinks and identity in seen_files:
+                continue
+            seen_files.add(identity)
+            try:
+                st = target.stat()
             except OSError:
                 continue
-            if st.st_size == 0 or st.st_size > max_bytes:
+            if not target.is_file() or st.st_size == 0 or st.st_size > max_bytes:
                 continue
             yield p
 
@@ -206,7 +295,7 @@ def _chunks_for(root: Path, path: Path, rel: str, ftype: str, chunk_chars: int,
 
 
 def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int,
-                embedder: Embedder) -> bool:
+                embedder: Embedder, follow_symlinks: bool = False) -> bool:
     """Index a single file if new/changed. Returns True if (re)indexed.
 
     Three-tier incremental check, cheapest first:
@@ -225,19 +314,23 @@ def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int
          (including the now-current fingerprint) without re-chunking.
     """
     rel = path.relative_to(root).as_posix()
-    st = path.stat()
+    read_path = _authorized_read_path(root, path, follow_symlinks)
+    st = read_path.stat()
     mtime_ns = st.st_mtime_ns
     row = con.execute(
         "SELECT id, sha256, mtime_ns, size, fingerprint FROM files WHERE path=?",
         (rel,)).fetchone()
     fingerprint = None
     if row and row[2] == mtime_ns and row[3] == st.st_size:
-        fingerprint = _sample_fingerprint(path, st.st_size)
+        read_path = _authorized_read_path(root, path, follow_symlinks)
+        fingerprint = _sample_fingerprint(read_path, st.st_size)
         if fingerprint == row[4]:
             return False  # unchanged by mtime+size+sampled fingerprint
-    sha = _sha256(path)
+    read_path = _authorized_read_path(root, path, follow_symlinks)
+    sha = _sha256(read_path)
     if fingerprint is None:
-        fingerprint = _sample_fingerprint(path, st.st_size)
+        read_path = _authorized_read_path(root, path, follow_symlinks)
+        fingerprint = _sample_fingerprint(read_path, st.st_size)
     if row and row[1] == sha:  # content identical, metadata (and/or fingerprint) drifted
         con.execute(
             "UPDATE files SET mtime=?, mtime_ns=?, size=?, fingerprint=? WHERE id=?",
@@ -245,8 +338,9 @@ def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int
         return False
     if row:
         _delete_files(con, [row[0]])
-    ftype = file_type(path)
-    chunks = _chunks_for(root, path, rel, ftype, chunk_chars, sha, st.st_size)
+    read_path = _authorized_read_path(root, path, follow_symlinks)
+    ftype = file_type(path)  # preserve the logical workspace path's format contract
+    chunks = _chunks_for(root, read_path, rel, ftype, chunk_chars, sha, st.st_size)
     total = sum(c.ntokens for c in chunks)
     cur = con.execute(
         "INSERT INTO files(path, sha256, mtime, mtime_ns, size, ftype, ntokens, fingerprint) "
@@ -317,7 +411,11 @@ def index_workspace(root: Path, force: bool = False) -> dict:
     if row and row[0] and row[0] != embedder.name:
         reembedded = _reembed_all(con, embedder)
 
-    paths = scan_files(root, int(icfg["max_file_bytes"]), bool(icfg["follow_symlinks"]))
+    follow_symlinks = bool(icfg["follow_symlinks"])
+    unsafe_files: set[str] = set()
+    unsafe_dirs: set[str] = set()
+    paths = scan_files(root, int(icfg["max_file_bytes"]), follow_symlinks,
+                       unsafe_files=unsafe_files, unsafe_dirs=unsafe_dirs)
     seen: set[str] = set()
     pdf_rels: list[str] = []
     scanned = 0
@@ -331,14 +429,18 @@ def index_workspace(root: Path, force: bool = False) -> dict:
             pdf_rels.append(rel)
         try:
             with _savepoint(con, "idx_file"):
-                if _index_one(con, root, p, chunk_chars, embedder):
+                if _index_one(con, root, p, chunk_chars, embedder, follow_symlinks):
                     indexed += 1
         except (OSError, sqlite3.Error):
             failed += 1
             continue
     # remove deleted files — ids captured in one query, batched delete
+    def retained_unsafe(rel: str) -> bool:
+        return rel in unsafe_files or any(
+            rel == directory or rel.startswith(directory + "/") for directory in unsafe_dirs)
+
     stale_ids = [fid for fid, rel in con.execute("SELECT id, path FROM files").fetchall()
-                 if rel not in seen]
+                 if rel not in seen and not retained_unsafe(rel)]
     _delete_files(con, stale_ids)
     con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('last_index', ?)",
                 (str(time.time()),))

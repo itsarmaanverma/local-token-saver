@@ -37,3 +37,9 @@ Append-only. Each agent adds a `## HANDOFF` block; never edit or delete prior bl
 **Done:** E05+E06 complete, run sequentially (same file, indexer.py) not in parallel. E05: scan_files() is a generator, backend-mismatch re-embed streams via fetchmany/executemany, per-file SAVEPOINT protects against mid-file failures committing partial state (real bug fixed). E06: fixed a real correctness bug where mtime+size alone couldn't detect a same-size, preserved-mtime file replacement -- reproduced the bug first, then fixed via mtime_ns + sampled BLAKE2 fingerprint fast-path with full-SHA256 fallback verification; added schema migration for pre-existing indexes. Incremental benchmark shows ~24x faster warm re-index. Full suite 116 passed/5 skipped/known P02 failure only.
 **Next:** Stop for user approval. When approved, claim E07 only and capture PDF-cache-identity baselines before editing convert.py.
 **Files touched:** src/token_saver/indexer.py, tests/test_indexer.py, scripts/benchmark_efficiency.py, docs/PHASE_PROGRESS.md, .agent-mesh/*
+
+## HANDOFF codex -> any | general | 2026-07-17T23:12:19Z
+**Task:** (project-level handoff)
+**Done:** E07 and P01 complete. E07 added atomic SHA-256 PDF cache sidecars and post-commit stale mirror pruning. P01 enforces the symlink workspace boundary, cycles/duplicate prevention, resolved-target ignores, pre-read reauthorization, and unsafe-row retention. Full suite 126 passed / 6 skipped / documented P02 failure only.
+**Next:** Stop for user approval. P02 is next and owns indexed-only streaming source slices plus the known Windows containment regression.
+**Files touched:** src/token_saver/convert.py, src/token_saver/indexer.py, tests/test_convert.py, tests/test_indexer.py, docs/PHASE_PROGRESS.md, .agent-mesh/*

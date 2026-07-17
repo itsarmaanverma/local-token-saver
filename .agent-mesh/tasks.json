@@ -147,6 +147,22 @@
       "claimed_at": "2026-07-17T23:05:17Z",
       "heartbeat_at": "2026-07-17T23:07:00Z",
       "notes": "Pass authoritative PDF identity and prune stale converted artifacts only after successful index commit; preserve existing E05/E06 hunks."
+    },
+    {
+      "id": "8cfb0406",
+      "title": "P01 workspace symlink privacy boundary",
+      "scope": [
+        "src/token_saver/indexer.py",
+        "tests/test_indexer.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "codex",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:07:20Z",
+      "heartbeat_at": "2026-07-17T23:12:11Z",
+      "notes": "Skip all links by default; constrain enabled traversal to internal targets with cycle prevention and pre-read revalidation."
     }
   ]
 }

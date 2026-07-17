@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import types
 import unittest
@@ -14,6 +15,8 @@ from unittest import mock
 from token_saver.config import init_workspace
 from token_saver.indexer import (
     _FINGERPRINT_SAMPLE_BYTES,
+    UnsafeWorkspacePath,
+    _is_link_or_reparse,
     _index_one,
     _sample_fingerprint,
     _savepoint,
@@ -299,6 +302,123 @@ class IndexerFingerprintTest(unittest.TestCase):
             "SELECT id FROM chunks WHERE path='legacy.md'").fetchone()[0]
         con.close()
         self.assertEqual(chunk_id_1, chunk_id_2)  # never deleted/recreated
+
+
+class SymlinkBoundaryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.external = Path(tempfile.mkdtemp())
+        init_workspace(self.tmp)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+        shutil.rmtree(self.external, ignore_errors=True)
+
+    def _symlink(self, link: Path, target: Path, *, directory: bool = False) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=directory)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlink creation unavailable: {exc}")
+
+    def test_disabled_policy_skips_linked_files_and_directories(self):
+        target_file = self.tmp / "target.md"
+        target_file.write_text("# target", encoding="utf-8")
+        target_dir = self.tmp / "target-dir"
+        target_dir.mkdir()
+        (target_dir / "inside.md").write_text("# inside", encoding="utf-8")
+        self._symlink(self.tmp / "file-link.md", target_file)
+        self._symlink(self.tmp / "dir-link", target_dir, directory=True)
+
+        paths = {path.relative_to(self.tmp).as_posix()
+                 for path in scan_files(self.tmp, 20_000_000, False)}
+
+        self.assertIn("target.md", paths)
+        self.assertIn("target-dir/inside.md", paths)
+        self.assertNotIn("file-link.md", paths)
+        self.assertFalse(any(path.startswith("dir-link/") for path in paths))
+
+    def test_windows_reparse_attribute_is_treated_as_a_link(self):
+        fake_stat = types.SimpleNamespace(
+            st_mode=stat.S_IFDIR,
+            st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400),
+        )
+        with mock.patch.object(Path, "lstat", return_value=fake_stat):
+            self.assertTrue(_is_link_or_reparse(self.tmp / "junction"))
+
+    def test_enabled_policy_follows_internal_once_and_rejects_external_or_ignored(self):
+        target = self.tmp / "z-target.md"
+        target.write_text("# internal", encoding="utf-8")
+        self._symlink(self.tmp / "a-link.md", target)
+        outside = self.external / "outside.md"
+        outside.write_text("# private", encoding="utf-8")
+        self._symlink(self.tmp / "external.md", outside)
+        ignored = self.tmp / ".env"
+        ignored.write_text("SECRET=hidden", encoding="utf-8")
+        self._symlink(self.tmp / "public-looking.md", ignored)
+        unsafe_files: set[str] = set()
+
+        paths = [path.relative_to(self.tmp).as_posix()
+                 for path in scan_files(self.tmp, 20_000_000, True,
+                                        unsafe_files=unsafe_files)]
+
+        self.assertIn("a-link.md", paths)
+        self.assertNotIn("z-target.md", paths)  # same canonical file is indexed once
+        self.assertNotIn("external.md", paths)
+        self.assertIn("external.md", unsafe_files)
+        self.assertNotIn("public-looking.md", paths)  # resolved target is ignored
+
+    def test_enabled_directory_cycle_terminates_without_duplicate_traversal(self):
+        real = self.tmp / "z-real"
+        real.mkdir()
+        (real / "doc.md").write_text("# once", encoding="utf-8")
+        self._symlink(self.tmp / "a-link", real, directory=True)
+        self._symlink(real / "back", self.tmp, directory=True)
+
+        paths = [path.relative_to(self.tmp).as_posix()
+                 for path in scan_files(self.tmp, 20_000_000, True)]
+
+        docs = [path for path in paths if path.endswith("doc.md")]
+        self.assertEqual(docs, ["a-link/doc.md"])
+
+    def test_retargeted_link_is_rejected_before_read(self):
+        inside = self.tmp / "z-inside.md"
+        inside.write_text("# safe", encoding="utf-8")
+        link = self.tmp / "a-link.md"
+        self._symlink(link, inside)
+        outside = self.external / "outside.md"
+        outside.write_text("# secret", encoding="utf-8")
+        path = next(path for path in scan_files(self.tmp, 20_000_000, True)
+                    if path.name == "a-link.md")
+        link.unlink()
+        self._symlink(link, outside)
+
+        con = connect(self.tmp)
+        with self.assertRaises(UnsafeWorkspacePath):
+            _index_one(con, self.tmp, path, 1600, HashedTFEmbedder(), True)
+        con.close()
+
+    def test_unsafe_retarget_does_not_delete_previously_indexed_row(self):
+        path = self.tmp / "document.md"
+        path.write_text("# previously safe", encoding="utf-8")
+        index_workspace(self.tmp)
+        path.unlink()
+        outside = self.external / "outside.md"
+        outside.write_text("# secret", encoding="utf-8")
+        self._symlink(path, outside)
+        config_path = self.tmp / ".tokensaver" / "config.json"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8").replace(
+                '"follow_symlinks": false', '"follow_symlinks": true'),
+            encoding="utf-8",
+        )
+
+        index_workspace(self.tmp)
+
+        con = connect(self.tmp)
+        count = con.execute(
+            "SELECT COUNT(*) FROM files WHERE path='document.md'").fetchone()[0]
+        con.close()
+        self.assertEqual(count, 1)
 
 
 if __name__ == "__main__":

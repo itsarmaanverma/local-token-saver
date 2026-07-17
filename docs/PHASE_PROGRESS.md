@@ -68,15 +68,22 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Owner: codex
   - Summary: Replaced mtime-only PDF mirror reuse with versioned SHA-256 sidecars, atomic mirror/metadata publication, output-integrity validation, and post-commit pruning for deleted or renamed PDFs.
   - Verification: 16 focused conversion/indexer tests passed; changed-file Ruff and compileall passed. The broader targeted run passed 36 tests with 1 skip and only the documented P02 Windows containment failure.
+  - Commit: `9cf0349`.
   - Handoff: Begin P01 directly; preserve the existing E05/E06 changes while tightening scan and pre-read symlink containment.
-- [ ] **P01 — Workspace symlink privacy boundary**
+- [x] **P01 — Workspace symlink privacy boundary**
+  - Status: complete
+  - Owner: codex
+  - Summary: Disabled linked files/directories by default; enabled only contained targets with canonical cycle/duplicate prevention, logical-and-resolved ignore enforcement, Windows reparse detection, and authorization immediately before every indexing read. Unsafe paths are retained rather than silently deleting their last safe index state.
+  - Verification: 16 focused indexer tests passed, including five end-to-end symlink-boundary scenarios and a Windows reparse regression. Full suite: 126 passed, 6 skipped, with only the documented P02 Windows containment failure. Changed-file Ruff and compileall passed.
+  - Handoff: Stop after P01 as requested. P02 is the next unchecked phase and owns the remaining Windows containment failure.
 - [ ] **P02 — Indexed-only streaming source slices**
 - [ ] **V01 — Final integration checkpoint**
 
 ## Current Task
 
-E05 and E06 are both complete and no task is active. E07 is the next
-unchecked task, but it must not begin without explicit user approval.
+E07 and P01 are complete. No implementation phase is active; P02 is the next
+unchecked task and owns indexed-only streaming source slices plus the known
+Windows containment regression.
 
 E05 and E06 were run one after another (not concurrently) by the same
 session in response to a single user go-ahead to do "the next two phases" --
