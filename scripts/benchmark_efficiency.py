@@ -4,6 +4,9 @@ Run from an installed checkout, for example:
 
     python scripts/benchmark_efficiency.py stats --sizes 1000,10000,100000
     python scripts/benchmark_efficiency.py search --sizes 10000,100000
+    python scripts/benchmark_efficiency.py jsonl --sizes 1000,10000,100000
+    python scripts/benchmark_efficiency.py csv --sizes 1000,10000,100000
+    python scripts/benchmark_efficiency.py reembed --sizes 10000,100000
 """
 from __future__ import annotations
 
@@ -220,6 +223,75 @@ def benchmark_csv(count: int, repeat: int) -> dict[str, int | float]:
     }
 
 
+def _reembed_workspace(count: int) -> Path:
+    """Build a workspace index with `count` pre-existing chunks needing
+    re-embedding (embedding_backend meta deliberately mismatched)."""
+    from token_saver.config import init_workspace
+    from token_saver.indexer import connect
+    from token_saver.vectors import HashedTFEmbedder, to_blob
+
+    root = Path(tempfile.mkdtemp(prefix="tsbench_reembed_"))
+    init_workspace(root)
+    con = connect(root)
+    embedder = HashedTFEmbedder()
+    for i in range(count):
+        rel = f"doc_{i}.md"
+        text = f"Section {i} body content number {i} for reembedding benchmark."
+        cur = con.execute(
+            "INSERT INTO files(path, sha256, mtime, size, ftype, ntokens) VALUES (?,?,?,?,?,?)",
+            (rel, f"{i:064x}", 0.0, len(text), "md", 20),
+        )
+        fid = cur.lastrowid
+        ccur = con.execute(
+            "INSERT INTO chunks(file_id, path, section, heading_path, start_line, end_line, "
+            "page, text, ntokens) VALUES (?,?,?,?,?,?,?,?,?)",
+            (fid, rel, f"Section {i}", "", 1, 1, None, text, 20),
+        )
+        con.execute(
+            "INSERT INTO vectors(chunk_id, vec) VALUES (?,?)",
+            (ccur.lastrowid, to_blob(embedder.embed(text))),
+        )
+    con.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_backend', 'stale_backend')")
+    con.commit()
+    con.close()
+    return root
+
+
+def benchmark_reembed(count: int, repeat: int) -> dict[str, int | float]:
+    """Benchmark the streamed fetchmany()+executemany() re-embed pass."""
+    from token_saver.indexer import _reembed_all, connect
+    from token_saver.vectors import HashedTFEmbedder
+
+    root = _reembed_workspace(count)
+    try:
+        embedder = HashedTFEmbedder()
+        timings = []
+        peak_bytes = 0
+        reembedded = 0
+        for _ in range(repeat):
+            con = connect(root)
+            tracemalloc.start()
+            started = time.perf_counter()
+            reembedded = _reembed_all(con, embedder)
+            timings.append(time.perf_counter() - started)
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            peak_bytes = max(peak_bytes, peak)
+            con.close()
+        if reembedded != count:
+            raise RuntimeError("reembed benchmark re-embedded an unexpected chunk count")
+        return {
+            "chunks": count,
+            "reembedded": reembedded,
+            "median_seconds": round(statistics.median(timings), 6),
+            "peak_memory_mb": round(peak_bytes / (1024 * 1024), 3),
+            "repeat": repeat,
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -242,6 +314,9 @@ def main() -> int:
     csv = subparsers.add_parser("csv", help="benchmark parse_csv on synthetic CSV")
     csv.add_argument("--sizes", default="1000,10000,100000")
     csv.add_argument("--repeat", type=_positive_int, default=1)
+    reembed = subparsers.add_parser("reembed", help="benchmark streamed backend-mismatch re-embed")
+    reembed.add_argument("--sizes", default="10000,100000")
+    reembed.add_argument("--repeat", type=_positive_int, default=1)
     args = parser.parse_args()
 
     if args.case == "stats":
@@ -273,6 +348,14 @@ def main() -> int:
         result = {
             "case": "parse_csv_streaming",
             "results": [benchmark_csv(size, args.repeat) for size in sizes],
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.case == "reembed":
+        sizes = [_positive_int(value.strip()) for value in args.sizes.split(",")]
+        result = {
+            "case": "streamed_reembed",
+            "results": [benchmark_reembed(size, args.repeat) for size in sizes],
         }
         print(json.dumps(result, indent=2))
         return 0
