@@ -21,7 +21,13 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: Sequential mode confirmed; a Claude-owned check was blocked from the active Codex scope while the Codex check passed. The final `any` handoff was appended for resume testing.
   - Commits: Start checkpoint `3fae635`; completion checkpoint pending this commit.
   - Handoff: E01 is the only next task. First claim `stats_report.py`, `test_stats.py`, the benchmark script, and progress artifacts, then capture the baseline before editing correlation.
-- [ ] **E01 — Sub-quadratic stats correlation**
+- [~] **E01 — Sub-quadratic stats correlation**
+  - Status: active
+  - Owner: codex
+  - Summary: Pending.
+  - Verification: Pending baseline, semantic regression tests, and 100,000-row benchmark.
+  - Commits: Pending.
+  - Handoff: Preserve exact-hash priority, one-to-one consumption, transformed ambiguity rules, and original-order tie behavior.
 - [ ] **E02 — Bounded vector-fallback memory**
 - [ ] **E03 — Scalable JSONL reporting**
 - [ ] **E04 — Streaming CSV sampling**
@@ -34,9 +40,9 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-P00 is complete. E01 is next and has not yet been claimed.
+E01 is active. Only stats correlation, its tests, the reusable benchmark script, and progress artifacts are in scope.
 
-Completed claim: `8aeeed8f`
+Active claim: `282027b0`
 
 ## Resume Instructions
 

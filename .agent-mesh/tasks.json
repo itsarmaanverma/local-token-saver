@@ -15,6 +15,22 @@
       "claimed_at": "2026-07-17T19:05:29Z",
       "heartbeat_at": "2026-07-17T19:08:50Z",
       "notes": "Initialize the durable sequential workspace and cross-platform handoff artifacts."
+    },
+    {
+      "id": "282027b0",
+      "title": "E01 sub-quadratic stats correlation",
+      "scope": [
+        "src/token_saver/stats_report.py",
+        "tests/test_stats.py",
+        "scripts/benchmark_efficiency.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/**"
+      ],
+      "owner": "codex",
+      "status": "claimed",
+      "claimed_at": "2026-07-17T19:10:16Z",
+      "heartbeat_at": "2026-07-17T19:10:16Z",
+      "notes": "Preserve correlation semantics while replacing full model-group rescans with bounded timestamp-window lookup."
     }
   ]
 }
