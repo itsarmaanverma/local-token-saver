@@ -1,8 +1,9 @@
 """Merged report construction and rendering for token-saver statistics."""
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
 from pathlib import Path
-from typing import Any
+from typing import Any, Hashable
 
 from .stats import (
     PRICES,
@@ -23,10 +24,22 @@ def correlate_pxpipe(
     window: float = 30.0,
 ) -> tuple[list[dict[str, Any]], int, int, int]:
     """Match exact passthrough hashes or transformed pxpipe rows by model/time."""
-    groups: dict[str, list[tuple[int, dict[str, Any], float | None]]] = {}
+    exact_groups: dict[tuple[str, str], list[tuple[float, int, dict[str, Any]]]] = {}
+    transformed_groups: dict[str, list[tuple[float, int, dict[str, Any]]]] = {}
     for index, row in enumerate(pxpipe_rows):
         model = str(row.get("model") or "")
-        groups.setdefault(model, []).append((index, row, epoch_seconds(row.get("ts"))))
+        timestamp = epoch_seconds(row.get("ts"))
+        if timestamp is None:
+            continue
+        candidate = (timestamp, index, row)
+        sha = row.get("req_body_sha8")
+        if isinstance(sha, str):
+            exact_groups.setdefault((model, sha), []).append(candidate)
+        if row.get("compressed") is True:
+            transformed_groups.setdefault(model, []).append(candidate)
+
+    exact_index = _window_indexes(exact_groups)
+    transformed_index = _window_indexes(transformed_groups)
     used: set[int] = set()
     matched: list[dict[str, Any]] = []
     exact_count = transformed_count = ambiguous_count = 0
@@ -34,31 +47,73 @@ def correlate_pxpipe(
         sha = proxy.get("req_body_sha8")
         model = str(proxy.get("model") or "")
         timestamp = epoch_seconds(proxy.get("ts"))
-        choices = [item for item in groups.get(model, []) if item[0] not in used]
-        if not choices:
+        if timestamp is None:
             continue
-        timed = [
-            item for item in choices
-            if timestamp is not None and item[2] is not None
-            and abs(timestamp - item[2]) <= window
-        ]
-        exact = [item for item in timed if isinstance(sha, str)
-                 and item[1].get("req_body_sha8") == sha]
-        if exact:
-            selected = min(exact, key=lambda item: abs(timestamp - item[2]))
+
+        selected = None
+        if isinstance(sha, str):
+            group = exact_index.get((model, sha))
+            if group is not None:
+                times, candidates = group
+                start, stop = _window_bounds(times, timestamp, window)
+                best_key = None
+                for position in range(start, stop):
+                    candidate_ts, index, row = candidates[position]
+                    if index in used:
+                        continue
+                    key = (abs(timestamp - candidate_ts), index)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        selected = (index, row)
+
+        if selected is not None:
             exact_count += 1
         else:
-            transformed = [item for item in timed if item[1].get("compressed") is True]
-            if len(transformed) > 1:
+            group = transformed_index.get(model) if model else None
+            transformed = None
+            available = 0
+            if group is not None:
+                times, candidates = group
+                start, stop = _window_bounds(times, timestamp, window)
+                for position in range(start, stop):
+                    _, index, row = candidates[position]
+                    if index in used:
+                        continue
+                    available += 1
+                    if available == 1:
+                        transformed = (index, row)
+                    else:
+                        break
+            if available > 1:
                 ambiguous_count += 1
                 continue
-            if not transformed or not model:
+            if transformed is None:
                 continue
-            selected = transformed[0]
+            selected = transformed
             transformed_count += 1
-        used.add(selected[0])
-        matched.append(selected[1])
+        index, row = selected
+        used.add(index)
+        matched.append(row)
     return matched, exact_count, transformed_count, ambiguous_count
+
+
+def _window_indexes(
+    groups: dict[Hashable, list[tuple[float, int, dict[str, Any]]]],
+) -> dict[Hashable, tuple[list[float], list[tuple[float, int, dict[str, Any]]]]]:
+    """Sort candidate groups once and retain timestamps for bisect lookups."""
+    indexes = {}
+    for key, candidates in groups.items():
+        candidates.sort(key=lambda item: (item[0], item[1]))
+        indexes[key] = ([item[0] for item in candidates], candidates)
+    return indexes
+
+
+def _window_bounds(times: list[float], timestamp: float, window: float) -> tuple[int, int]:
+    """Return the inclusive-time-window slice for a sorted timestamp list."""
+    return (
+        bisect_left(times, timestamp - window),
+        bisect_right(times, timestamp + window),
+    )
 
 
 def build_report(

@@ -23,7 +23,7 @@ from token_saver.stats import (
     summarize_pxpipe_events,
     workspace_log_path,
 )
-from token_saver.stats_report import build_report
+from token_saver.stats_report import build_report, correlate_pxpipe
 
 # ---------------------------------------------------------------------------
 # Path helpers
@@ -389,3 +389,74 @@ def test_build_report_skips_ambiguous_compressed_time_matches(tmp_path):
     report = build_report(root, proxy_log=proxy_log, pxpipe_log=pxpipe_log)
     assert report["sources"]["pxpipe_rows_matched"] == 0
     assert report["sources"]["pxpipe_ambiguous_time_matches_skipped"] == 1
+
+
+def test_correlate_exact_tie_preserves_pxpipe_input_order():
+    proxy = [{"ts": 100, "model": "model", "req_body_sha8": "same"}]
+    pxpipe = [
+        {"ts": 90, "model": "model", "req_body_sha8": "same", "marker": "first"},
+        {"ts": 110, "model": "model", "req_body_sha8": "same", "marker": "second"},
+    ]
+
+    matched, exact, transformed, ambiguous = correlate_pxpipe(proxy, pxpipe)
+
+    assert [row["marker"] for row in matched] == ["first"]
+    assert (exact, transformed, ambiguous) == (1, 0, 0)
+
+
+def test_correlate_consumes_each_exact_row_once():
+    proxy = [
+        {"ts": 100, "model": "model", "req_body_sha8": "same"},
+        {"ts": 100, "model": "model", "req_body_sha8": "same"},
+    ]
+    pxpipe = [
+        {"ts": 100, "model": "model", "req_body_sha8": "same", "marker": "first"},
+        {"ts": 100, "model": "model", "req_body_sha8": "same", "marker": "second"},
+    ]
+
+    matched, exact, transformed, ambiguous = correlate_pxpipe(proxy, pxpipe)
+
+    assert [row["marker"] for row in matched] == ["first", "second"]
+    assert (exact, transformed, ambiguous) == (2, 0, 0)
+
+
+def test_correlate_exact_hash_wins_over_transformed_ambiguity():
+    proxy = [{"ts": 100, "model": "model", "req_body_sha8": "wanted"}]
+    pxpipe = [
+        {"ts": 99, "model": "model", "req_body_sha8": "other", "compressed": True},
+        {"ts": 101, "model": "model", "req_body_sha8": "wanted", "compressed": True},
+    ]
+
+    matched, exact, transformed, ambiguous = correlate_pxpipe(proxy, pxpipe)
+
+    assert [row["req_body_sha8"] for row in matched] == ["wanted"]
+    assert (exact, transformed, ambiguous) == (1, 0, 0)
+
+
+def test_correlate_ignores_missing_timestamps_and_out_of_window_rows():
+    proxy = [
+        {"ts": None, "model": "model", "req_body_sha8": "same"},
+        {"ts": 100, "model": "model", "req_body_sha8": "same"},
+    ]
+    pxpipe = [
+        {"ts": None, "model": "model", "req_body_sha8": "same"},
+        {"ts": 131, "model": "model", "req_body_sha8": "same"},
+    ]
+
+    assert correlate_pxpipe(proxy, pxpipe, window=30) == ([], 0, 0, 0)
+
+
+def test_correlate_excludes_used_row_from_transformed_ambiguity():
+    proxy = [
+        {"ts": 100, "model": "model", "req_body_sha8": "exact"},
+        {"ts": 100, "model": "model", "req_body_sha8": "no-match"},
+    ]
+    pxpipe = [
+        {"ts": 100, "model": "model", "req_body_sha8": "exact", "compressed": True},
+        {"ts": 100, "model": "model", "req_body_sha8": "other", "compressed": True},
+    ]
+
+    matched, exact, transformed, ambiguous = correlate_pxpipe(proxy, pxpipe)
+
+    assert [row["req_body_sha8"] for row in matched] == ["exact", "other"]
+    assert (exact, transformed, ambiguous) == (1, 1, 0)
