@@ -10,7 +10,9 @@ import os
 import re
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from .config import index_path, load_config, ts_dir
 from .convert import ensure_converted
@@ -19,6 +21,7 @@ from .parsers import Chunk, file_type, parse_file, parse_markdown
 from .vectors import Embedder, get_embedder, to_blob
 
 _PAGE_IN_HEADING = re.compile(r"^Page (\d+)$")
+_REEMBED_BATCH_SIZE = 500
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -71,9 +74,14 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def scan_files(root: Path, max_bytes: int, follow_symlinks: bool) -> list[Path]:
+def scan_files(root: Path, max_bytes: int, follow_symlinks: bool) -> Iterator[Path]:
+    """Walk the workspace, yielding matched file paths one at a time.
+
+    An iterator rather than a materialized list, so a caller can start
+    indexing before the walk finishes and never holds every path in memory
+    at once (matters for very large workspaces).
+    """
     matcher = load_matcher(root)
-    out: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
         rel_dir = Path(dirpath).relative_to(root).as_posix()
         if rel_dir == ".":
@@ -94,8 +102,30 @@ def scan_files(root: Path, max_bytes: int, follow_symlinks: bool) -> list[Path]:
                 continue
             if st.st_size == 0 or st.st_size > max_bytes:
                 continue
-            out.append(p)
-    return out
+            yield p
+
+
+@contextmanager
+def _savepoint(con: sqlite3.Connection, name: str) -> Iterator[None]:
+    """Wrap a block in a SQLite SAVEPOINT; roll it back cleanly on any error.
+
+    Protects one file's replacement (delete-old + insert-new chunks/fts/
+    vectors) as its own atomic unit within the outer per-run transaction, so
+    a failure partway through a single file can never leave that file's rows
+    half-written in the eventually-committed index. The original exception
+    is always re-raised after rollback -- this only guarantees cleanup, it
+    does not decide which failures are tolerable (the caller's except clause
+    still does that).
+    """
+    con.execute(f"SAVEPOINT {name}")
+    try:
+        yield
+    except Exception:
+        con.execute(f"ROLLBACK TO {name}")
+        con.execute(f"RELEASE {name}")
+        raise
+    else:
+        con.execute(f"RELEASE {name}")
 
 
 def _delete_files(con: sqlite3.Connection, fids: list[int]) -> None:
@@ -171,6 +201,31 @@ def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int
     return True
 
 
+def _reembed_all(con: sqlite3.Connection, embedder: Embedder) -> int:
+    """Re-embed every existing chunk with `embedder`, streamed and batched.
+
+    Used for the backend-mismatch pass: no re-scan, re-convert, re-chunk, or
+    touching files/chunks/FTS tables. Reads chunks via fetchmany() and writes
+    vectors via batched executemany() so neither side holds every chunk's
+    text/vector in memory at once or round-trips one statement per chunk.
+    Returns the number of chunks re-embedded.
+    """
+    reembedded = 0
+    cursor = con.execute("SELECT id, section, text FROM chunks")
+    while True:
+        batch = cursor.fetchmany(_REEMBED_BATCH_SIZE)
+        if not batch:
+            break
+        updates = [
+            (cid, to_blob(embedder.embed(f"{section} {text}")))
+            for cid, section, text in batch
+        ]
+        con.executemany(
+            "INSERT OR REPLACE INTO vectors(chunk_id, vec) VALUES (?,?)", updates)
+        reembedded += len(updates)
+    return reembedded
+
+
 def index_workspace(root: Path, force: bool = False) -> dict:
     """Scan + convert PDFs + (re)index changed files. Returns stats dict."""
     root = root.resolve()
@@ -185,27 +240,27 @@ def index_workspace(root: Path, force: bool = False) -> dict:
     start = time.time()
 
     # Backend-mismatch detection: if the stored backend differs from the
-    # active embedder, do a re-embed-only pass over existing chunks — no
-    # re-scan, re-convert, re-chunk, or touching files/chunks/FTS tables.
+    # active embedder, do a re-embed-only pass over existing chunks.
     reembedded = 0
     row = con.execute("SELECT value FROM meta WHERE key='embedding_backend'").fetchone()
     if row and row[0] and row[0] != embedder.name:
-        for cid, section, text in con.execute("SELECT id, section, text FROM chunks").fetchall():
-            vec = embedder.embed(f"{section} {text}")
-            con.execute("INSERT OR REPLACE INTO vectors(chunk_id, vec) VALUES (?,?)",
-                        (cid, to_blob(vec)))
-            reembedded += 1
+        reembedded = _reembed_all(con, embedder)
 
     paths = scan_files(root, int(icfg["max_file_bytes"]), bool(icfg["follow_symlinks"]))
     seen: set[str] = set()
+    scanned = 0
     indexed = 0
+    failed = 0
     for p in paths:
+        scanned += 1
         rel = p.relative_to(root).as_posix()
         seen.add(rel)
         try:
-            if _index_one(con, root, p, chunk_chars, embedder):
-                indexed += 1
+            with _savepoint(con, "idx_file"):
+                if _index_one(con, root, p, chunk_chars, embedder):
+                    indexed += 1
         except (OSError, sqlite3.Error):
+            failed += 1
             continue
     # remove deleted files — ids captured in one query, batched delete
     stale_ids = [fid for fid, rel in con.execute("SELECT id, path FROM files").fetchall()
@@ -217,8 +272,9 @@ def index_workspace(root: Path, force: bool = False) -> dict:
                 (embedder.name,))
     con.commit()
     stats = index_stats(con)
-    stats.update({"files_scanned": len(paths), "files_indexed": indexed,
+    stats.update({"files_scanned": scanned, "files_indexed": indexed,
                   "files_removed": len(stale_ids),
+                  "files_failed": failed,
                   "reembedded": reembedded,
                   "seconds": round(time.time() - start, 2)})
     con.close()
