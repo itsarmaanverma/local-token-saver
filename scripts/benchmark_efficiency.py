@@ -7,6 +7,7 @@ Run from an installed checkout, for example:
     python scripts/benchmark_efficiency.py jsonl --sizes 1000,10000,100000
     python scripts/benchmark_efficiency.py csv --sizes 1000,10000,100000
     python scripts/benchmark_efficiency.py reembed --sizes 10000,100000
+    python scripts/benchmark_efficiency.py incremental --sizes 1000,10000
 """
 from __future__ import annotations
 
@@ -292,6 +293,48 @@ def benchmark_reembed(count: int, repeat: int) -> dict[str, int | float]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def benchmark_incremental(count: int, repeat: int) -> dict[str, int | float]:
+    """Compare a cold full index against a warm unchanged-tree re-index.
+
+    Demonstrates E06's incremental fast path: the second run should skip
+    full SHA-256 hashing (and all chunking/embedding) for every file via the
+    mtime_ns+size+sampled-fingerprint check.
+    """
+    from token_saver.config import init_workspace
+    from token_saver.indexer import index_workspace
+
+    root = Path(tempfile.mkdtemp(prefix="tsbench_incremental_"))
+    try:
+        for i in range(count):
+            (root / f"doc_{i}.md").write_text(
+                f"# Doc {i}\n\nSome stable body content for file {i}.\n", encoding="utf-8")
+        init_workspace(root)
+
+        cold_timings = []
+        warm_timings = []
+        for _ in range(repeat):
+            started = time.perf_counter()
+            stats_cold = index_workspace(root)
+            cold_timings.append(time.perf_counter() - started)
+
+            started = time.perf_counter()
+            stats_warm = index_workspace(root)
+            warm_timings.append(time.perf_counter() - started)
+
+            if stats_warm["files_indexed"] != 0:
+                raise RuntimeError("incremental benchmark: warm run re-indexed unchanged files")
+        return {
+            "files": count,
+            "files_indexed_cold": stats_cold["files_indexed"],
+            "files_indexed_warm": stats_warm["files_indexed"],
+            "cold_median_seconds": round(statistics.median(cold_timings), 6),
+            "warm_median_seconds": round(statistics.median(warm_timings), 6),
+            "repeat": repeat,
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -317,6 +360,10 @@ def main() -> int:
     reembed = subparsers.add_parser("reembed", help="benchmark streamed backend-mismatch re-embed")
     reembed.add_argument("--sizes", default="10000,100000")
     reembed.add_argument("--repeat", type=_positive_int, default=1)
+    incremental = subparsers.add_parser(
+        "incremental", help="benchmark cold vs. warm (unchanged-tree) index_workspace()")
+    incremental.add_argument("--sizes", default="1000,10000")
+    incremental.add_argument("--repeat", type=_positive_int, default=1)
     args = parser.parse_args()
 
     if args.case == "stats":
@@ -356,6 +403,14 @@ def main() -> int:
         result = {
             "case": "streamed_reembed",
             "results": [benchmark_reembed(size, args.repeat) for size in sizes],
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.case == "incremental":
+        sizes = [_positive_int(value.strip()) for value in args.sizes.split(",")]
+        result = {
+            "case": "incremental_cold_vs_warm",
+            "results": [benchmark_incremental(size, args.repeat) for size in sizes],
         }
         print(json.dumps(result, indent=2))
         return 0
