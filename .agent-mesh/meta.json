@@ -1,0 +1,9 @@
+{
+  "mode": "sequential",
+  "orchestrator": "claude",
+  "orchestrator_fallback": [
+    "codex",
+    "agy"
+  ],
+  "usage_threshold": 0.8
+}

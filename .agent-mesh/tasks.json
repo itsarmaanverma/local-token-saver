@@ -1,0 +1,20 @@
+{
+  "tasks": [
+    {
+      "id": "8aeeed8f",
+      "title": "P00 continuity setup",
+      "scope": [
+        "CLAUDE.md",
+        "AGENTS.md",
+        "docs/HIGH_IMPACT_EFFICIENCY_FIXES.md",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/**"
+      ],
+      "owner": "codex",
+      "status": "claimed",
+      "claimed_at": "2026-07-17T19:05:29Z",
+      "heartbeat_at": "2026-07-17T19:05:29Z",
+      "notes": "Initialize the durable sequential workspace and cross-platform handoff artifacts."
+    }
+  ]
+}
