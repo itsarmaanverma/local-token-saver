@@ -22,6 +22,7 @@ from .vectors import Embedder, get_embedder, to_blob
 
 _PAGE_IN_HEADING = re.compile(r"^Page (\d+)$")
 _REEMBED_BATCH_SIZE = 500
+_FINGERPRINT_SAMPLE_BYTES = 4096
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
@@ -29,9 +30,11 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT UNIQUE NOT NULL,
     sha256 TEXT NOT NULL,
     mtime REAL NOT NULL,
+    mtime_ns INTEGER NOT NULL DEFAULT 0,
     size INTEGER NOT NULL,
     ftype TEXT NOT NULL,
-    ntokens INTEGER NOT NULL DEFAULT 0
+    ntokens INTEGER NOT NULL DEFAULT 0,
+    fingerprint TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS chunks (
     id INTEGER PRIMARY KEY,
@@ -57,12 +60,30 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 
+def _migrate_schema(con: sqlite3.Connection) -> None:
+    """Add columns introduced after a `files` table already existed on disk.
+
+    `CREATE TABLE IF NOT EXISTS` in SCHEMA only covers brand-new indexes;
+    pre-existing indexes need an explicit, idempotent ADD COLUMN so older
+    on-disk databases migrate in place instead of breaking. Defaults
+    (mtime_ns=0, fingerprint='') guarantee migrated rows never spuriously
+    match the fast-path short-circuit -- the first re-index after upgrading
+    always does one real verification pass per file, then self-heals.
+    """
+    existing = {row[1] for row in con.execute("PRAGMA table_info(files)").fetchall()}
+    if "mtime_ns" not in existing:
+        con.execute("ALTER TABLE files ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0")
+    if "fingerprint" not in existing:
+        con.execute("ALTER TABLE files ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")
+
+
 def connect(root: Path) -> sqlite3.Connection:
     ts_dir(root).mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(index_path(root))
     con.execute("PRAGMA foreign_keys=ON")
     con.execute("PRAGMA journal_mode=WAL")
     con.executescript(SCHEMA)
+    _migrate_schema(con)
     return con
 
 
@@ -71,6 +92,28 @@ def _sha256(path: Path) -> str:
     with path.open("rb") as f:
         for block in iter(lambda: f.read(1 << 16), b""):
             h.update(block)
+    return h.hexdigest()
+
+
+def _sample_fingerprint(path: Path, size: int) -> str:
+    """Cheap BLAKE2 fingerprint over the head, middle, and tail of a file.
+
+    A fast, non-authoritative signal used only to decide whether a file is
+    worth re-verifying with a full SHA-256 -- never stored or trusted as the
+    file's identity. Reads at most 3x _FINGERPRINT_SAMPLE_BYTES regardless of
+    file size, so it stays cheap even for very large unchanged files.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    h.update(size.to_bytes(8, "big"))
+    with path.open("rb") as f:
+        h.update(f.read(_FINGERPRINT_SAMPLE_BYTES))
+        if size > _FINGERPRINT_SAMPLE_BYTES:
+            mid = max(0, size // 2 - _FINGERPRINT_SAMPLE_BYTES // 2)
+            f.seek(mid)
+            h.update(f.read(_FINGERPRINT_SAMPLE_BYTES))
+        if size > _FINGERPRINT_SAMPLE_BYTES * 2:
+            f.seek(max(0, size - _FINGERPRINT_SAMPLE_BYTES))
+            h.update(f.read(_FINGERPRINT_SAMPLE_BYTES))
     return h.hexdigest()
 
 
@@ -161,17 +204,41 @@ def _chunks_for(root: Path, path: Path, rel: str, ftype: str, chunk_chars: int) 
 
 def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int,
                 embedder: Embedder) -> bool:
-    """Index a single file if new/changed. Returns True if (re)indexed."""
+    """Index a single file if new/changed. Returns True if (re)indexed.
+
+    Three-tier incremental check, cheapest first:
+      1. mtime_ns + size + sampled fingerprint all match the stored row ->
+         unchanged, skip full hashing entirely. mtime_ns (integer
+         nanoseconds, from st_mtime_ns) avoids the float-precision pitfalls
+         of comparing st_mtime directly. The sampled fingerprint additionally
+         catches a same-size, preserved-mtime replacement -- a file whose
+         content changed but whose mtime+size still happen to match the
+         stored row (e.g. certain backup/restore or checkout tools) -- which
+         mtime+size alone cannot distinguish from a genuinely unchanged file.
+      2. mtime_ns/size/fingerprint don't all match -> compute the full
+         SHA-256 (still the authoritative identity) to see whether content
+         actually changed or just metadata drifted.
+      3. Metadata drifted but SHA-256 is identical -> update stored metadata
+         (including the now-current fingerprint) without re-chunking.
+    """
     rel = path.relative_to(root).as_posix()
     st = path.stat()
-    row = con.execute("SELECT id, sha256, mtime, size FROM files WHERE path=?",
-                      (rel,)).fetchone()
-    if row and row[2] == st.st_mtime and row[3] == st.st_size:
-        return False  # unchanged by mtime+size — skip reading/hashing entirely
+    mtime_ns = st.st_mtime_ns
+    row = con.execute(
+        "SELECT id, sha256, mtime_ns, size, fingerprint FROM files WHERE path=?",
+        (rel,)).fetchone()
+    fingerprint = None
+    if row and row[2] == mtime_ns and row[3] == st.st_size:
+        fingerprint = _sample_fingerprint(path, st.st_size)
+        if fingerprint == row[4]:
+            return False  # unchanged by mtime+size+sampled fingerprint
     sha = _sha256(path)
-    if row and row[1] == sha:  # content identical, metadata drifted
-        con.execute("UPDATE files SET mtime=?, size=? WHERE id=?",
-                    (st.st_mtime, st.st_size, row[0]))
+    if fingerprint is None:
+        fingerprint = _sample_fingerprint(path, st.st_size)
+    if row and row[1] == sha:  # content identical, metadata (and/or fingerprint) drifted
+        con.execute(
+            "UPDATE files SET mtime=?, mtime_ns=?, size=?, fingerprint=? WHERE id=?",
+            (st.st_mtime, mtime_ns, st.st_size, fingerprint, row[0]))
         return False
     if row:
         _delete_files(con, [row[0]])
@@ -179,8 +246,9 @@ def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int
     chunks = _chunks_for(root, path, rel, ftype, chunk_chars)
     total = sum(c.ntokens for c in chunks)
     cur = con.execute(
-        "INSERT INTO files(path, sha256, mtime, size, ftype, ntokens) VALUES (?,?,?,?,?,?)",
-        (rel, sha, st.st_mtime, st.st_size, ftype, total),
+        "INSERT INTO files(path, sha256, mtime, mtime_ns, size, ftype, ntokens, fingerprint) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (rel, sha, st.st_mtime, mtime_ns, st.st_size, ftype, total, fingerprint),
     )
     fid = cur.lastrowid
     for c in chunks:

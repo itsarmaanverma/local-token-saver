@@ -2,7 +2,9 @@
 incremental fingerprinting (E06)."""
 from __future__ import annotations
 
+import os
 import shutil
+import sqlite3
 import tempfile
 import types
 import unittest
@@ -11,7 +13,9 @@ from unittest import mock
 
 from token_saver.config import init_workspace
 from token_saver.indexer import (
+    _FINGERPRINT_SAMPLE_BYTES,
     _index_one,
+    _sample_fingerprint,
     _savepoint,
     connect,
     index_workspace,
@@ -132,6 +136,169 @@ class IndexerStreamingTest(unittest.TestCase):
             "SELECT COUNT(*) FROM vectors WHERE vec=?", (sentinel,)).fetchone()[0]
         con.close()
         self.assertEqual(remaining_sentinels, 0)  # every vector was actually rewritten
+
+
+class IndexerFingerprintTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_same_size_preserved_mtime_replacement_is_detected(self):
+        """The exact bug E06 fixes: mtime+size alone can't tell a genuinely
+        unchanged file from a same-size replacement whose mtime happens to
+        be restored to its old value (e.g. some backup/restore/checkout
+        tools). The sampled fingerprint catches what mtime+size miss."""
+        init_workspace(self.tmp)
+        f = self.tmp / "a.md"
+        f.write_text("# Original\n\nAAAA content here.\n", encoding="utf-8")
+        index_workspace(self.tmp)
+        st1 = f.stat()
+
+        new_text = "# Original\n\nBBBB content here.\n"
+        self.assertEqual(len(new_text), len(f.read_text(encoding="utf-8")))
+        f.write_text(new_text, encoding="utf-8")
+        os.utime(f, (st1.st_atime, st1.st_mtime))
+        st2 = f.stat()
+        self.assertEqual(st2.st_mtime, st1.st_mtime)
+        self.assertEqual(st2.st_size, st1.st_size)
+
+        stats = index_workspace(self.tmp)
+        self.assertEqual(stats["files_indexed"], 1)  # must NOT be skipped
+
+        con = connect(self.tmp)
+        text = con.execute("SELECT text FROM chunks WHERE path='a.md'").fetchone()[0]
+        con.close()
+        self.assertIn("BBBB", text)
+        self.assertNotIn("AAAA", text)
+
+    def test_unchanged_file_skips_full_sha256(self):
+        init_workspace(self.tmp)
+        (self.tmp / "a.md").write_text("# stable content\n", encoding="utf-8")
+        index_workspace(self.tmp)  # establishes mtime_ns + fingerprint
+
+        def _boom(path):
+            raise AssertionError("full SHA-256 hashing should be skipped for unchanged files")
+
+        with mock.patch("token_saver.indexer._sha256", side_effect=_boom):
+            stats = index_workspace(self.tmp)
+        self.assertEqual(stats["files_indexed"], 0)
+
+    def test_fingerprint_ignores_changes_outside_sampled_windows(self):
+        """Proves _sample_fingerprint genuinely only reads head/mid/tail
+        windows rather than the whole file: a mutation placed well outside
+        all three sampled windows must not change the fingerprint."""
+        size = _FINGERPRINT_SAMPLE_BYTES * 10
+        base = bytes([65]) * size  # b"A" * size
+        path_a = self.tmp / "a.bin"
+        path_a.write_bytes(base)
+        fp_a = _sample_fingerprint(path_a, size)
+
+        mutated = bytearray(base)
+        unsampled_offset = size // 4  # outside head [0,4096), mid, and tail windows
+        mutated[unsampled_offset] = 90  # b"Z"
+        path_b = self.tmp / "b.bin"
+        path_b.write_bytes(bytes(mutated))
+        fp_b = _sample_fingerprint(path_b, size)
+
+        self.assertEqual(fp_a, fp_b)
+
+    def test_fingerprint_detects_change_inside_head_window(self):
+        size = _FINGERPRINT_SAMPLE_BYTES * 10
+        base = bytes([65]) * size
+        path_a = self.tmp / "a.bin"
+        path_a.write_bytes(base)
+        fp_a = _sample_fingerprint(path_a, size)
+
+        mutated = bytearray(base)
+        mutated[10] = 90  # inside the head window
+        path_b = self.tmp / "b.bin"
+        path_b.write_bytes(bytes(mutated))
+        fp_b = _sample_fingerprint(path_b, size)
+
+        self.assertNotEqual(fp_a, fp_b)
+
+    def test_schema_migration_adds_columns_to_pre_existing_index(self):
+        """A pre-E06 on-disk index (files table without mtime_ns/fingerprint)
+        must migrate in place: connect() adds the columns, existing rows get
+        safe defaults that force one real verification pass, nothing is lost.
+        """
+        from token_saver.config import index_path, ts_dir
+
+        ts_dir(self.tmp).mkdir(parents=True, exist_ok=True)
+        raw = sqlite3.connect(index_path(self.tmp))
+        raw.executescript("""
+            CREATE TABLE files (
+                id INTEGER PRIMARY KEY,
+                path TEXT UNIQUE NOT NULL,
+                sha256 TEXT NOT NULL,
+                mtime REAL NOT NULL,
+                size INTEGER NOT NULL,
+                ftype TEXT NOT NULL,
+                ntokens INTEGER NOT NULL DEFAULT 0
+            );
+        """)
+        raw.execute(
+            "INSERT INTO files(path, sha256, mtime, size, ftype, ntokens) VALUES (?,?,?,?,?,?)",
+            ("legacy.md", "deadbeef", 12345.0, 10, "md", 5))
+        raw.commit()
+        raw.close()
+
+        con = connect(self.tmp)  # must migrate without error
+        cols = {row[1] for row in con.execute("PRAGMA table_info(files)").fetchall()}
+        self.assertIn("mtime_ns", cols)
+        self.assertIn("fingerprint", cols)
+        row = con.execute(
+            "SELECT path, mtime_ns, fingerprint FROM files WHERE path='legacy.md'").fetchone()
+        con.close()
+        self.assertEqual(row, ("legacy.md", 0, ""))  # safe migrated defaults
+
+    def test_migrated_row_self_heals_on_next_index_run(self):
+        """After migration, the first real index run for a legacy row does
+        one genuine verification pass (mtime_ns=0/fingerprint='' can't match
+        anything real) and then the fast path works normally afterward.
+
+        Checks chunk-id stability rather than the aggregate files_indexed
+        count, since init_workspace() also writes a real .tokensaverignore
+        file that legitimately gets indexed alongside legacy.md.
+        """
+        init_workspace(self.tmp)
+        f = self.tmp / "legacy.md"
+        f.write_text("# legacy content\n", encoding="utf-8")
+        con = connect(self.tmp)
+        st = f.stat()
+        from token_saver.indexer import _sha256
+        fcur = con.execute(
+            "INSERT INTO files(path, sha256, mtime, mtime_ns, size, ftype, ntokens, fingerprint) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            ("legacy.md", _sha256(f), st.st_mtime, 0, st.st_size, "md", 3, ""),
+        )
+        con.execute(
+            "INSERT INTO chunks(file_id, path, section, heading_path, start_line, end_line, "
+            "page, text, ntokens) VALUES (?,?,?,?,?,?,?,?,?)",
+            (fcur.lastrowid, "legacy.md", "", "", 1, 1, None, "# legacy content", 3),
+        )
+        con.commit()
+        con.close()
+
+        index_workspace(self.tmp)  # content matches via full-hash fallback
+        con = connect(self.tmp)
+        chunk_id_1 = con.execute(
+            "SELECT id FROM chunks WHERE path='legacy.md'").fetchone()[0]
+        con.close()
+
+        def _boom(path):
+            raise AssertionError("second run should hit the fast path, not full SHA-256")
+
+        with mock.patch("token_saver.indexer._sha256", side_effect=_boom):
+            index_workspace(self.tmp)
+
+        con = connect(self.tmp)
+        chunk_id_2 = con.execute(
+            "SELECT id FROM chunks WHERE path='legacy.md'").fetchone()[0]
+        con.close()
+        self.assertEqual(chunk_id_1, chunk_id_2)  # never deleted/recreated
 
 
 if __name__ == "__main__":
