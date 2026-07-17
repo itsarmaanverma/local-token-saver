@@ -3,13 +3,19 @@
 Run from an installed checkout, for example:
 
     python scripts/benchmark_efficiency.py stats --sizes 1000,10000,100000
+    python scripts/benchmark_efficiency.py search --sizes 10000,100000
 """
 from __future__ import annotations
 
 import argparse
 import json
+import random
+import shutil
 import statistics
+import tempfile
 import time
+import tracemalloc
+from pathlib import Path
 from typing import Any
 
 from token_saver.stats_report import correlate_pxpipe
@@ -53,6 +59,94 @@ def benchmark_stats(count: int, repeat: int) -> dict[str, int | float]:
     }
 
 
+def _search_workspace(count: int, text_words: int = 400) -> Path:
+    """Build a synthetic indexed workspace with `count` large-payload chunks.
+
+    Roughly 1 in 40 chunks gets two query-marker tokens spliced into its
+    `chunks.text` (and therefore its vector), so the vector gate has real
+    winners to rank instead of exercising an always-empty fast path. The
+    `chunks_fts` copy is populated from the pre-splice word list, so it
+    never contains the marker tokens: FTS5 always misses the benchmark
+    query, which is what forces search() into the pure-vector fallback
+    this benchmark targets, rather than the bounded lexical-hit path.
+    """
+    from token_saver.config import init_workspace
+    from token_saver.indexer import connect
+    from token_saver.vectors import HashedTFEmbedder, to_blob
+
+    root = Path(tempfile.mkdtemp(prefix="tsbench_search_"))
+    init_workspace(root)
+    con = connect(root)
+    embedder = HashedTFEmbedder()
+    vocab = [f"lexeme{i}" for i in range(500)]
+    rng = random.Random(1234)
+    for i in range(count):
+        rel = f"doc_{i}.md"
+        section = f"Section {i}"
+        words = rng.choices(vocab, k=text_words)
+        fts_text = " ".join(words)  # indexed as-is: never contains the query markers
+        if i % 40 == 0:
+            # hashed_tf is term-frequency weighted, so a single marker
+            # occurrence is swamped by ~400 noise words and never clears the
+            # 0.35 gate. Repeating the pair concentrates enough mass in the
+            # marker's hashed dimensions to produce a real, gate-passing hit.
+            words[:40] = ["benchqueryalpha", "benchquerybeta"] * 20
+        text = " ".join(words)
+        cur = con.execute(
+            "INSERT INTO files(path, sha256, mtime, size, ftype, ntokens) VALUES (?,?,?,?,?,?)",
+            (rel, f"{i:064x}", 0.0, len(text), "md", text_words),
+        )
+        fid = cur.lastrowid
+        ccur = con.execute(
+            "INSERT INTO chunks(file_id, path, section, heading_path, start_line, end_line, "
+            "page, text, ntokens) VALUES (?,?,?,?,?,?,?,?,?)",
+            (fid, rel, section, section, 1, 10, None, text, text_words),
+        )
+        cid = ccur.lastrowid
+        con.execute(
+            "INSERT INTO chunks_fts(rowid, text, path, section) VALUES (?,?,?,?)",
+            (cid, fts_text, rel, section),
+        )
+        con.execute(
+            "INSERT INTO vectors(chunk_id, vec) VALUES (?,?)",
+            (cid, to_blob(embedder.embed(f"{section} {text}"))),
+        )
+    con.commit()
+    con.close()
+    return root
+
+
+def benchmark_search(count: int, repeat: int) -> dict[str, Any]:
+    """Peak-memory and ranking probe for the pure-vector fallback in search()."""
+    from token_saver.retrieval import search
+
+    root = _search_workspace(count)
+    try:
+        query = "benchqueryalpha benchquerybeta"
+        timings = []
+        peak_bytes = 0
+        top_ids: list[int] = []
+        for _ in range(repeat):
+            tracemalloc.start()
+            started = time.perf_counter()
+            hits = search(root, query, top_k=20)
+            timings.append(time.perf_counter() - started)
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            peak_bytes = max(peak_bytes, peak)
+            top_ids = [h.chunk_id for h in hits]
+        return {
+            "chunks": count,
+            "median_seconds": round(statistics.median(timings), 6),
+            "peak_memory_mb": round(peak_bytes / (1024 * 1024), 3),
+            "hits_returned": len(top_ids),
+            "top_hit_ids": top_ids,
+            "repeat": repeat,
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -66,6 +160,9 @@ def main() -> int:
     stats = subparsers.add_parser("stats", help="benchmark pxpipe correlation")
     stats.add_argument("--sizes", default="1000,10000,100000")
     stats.add_argument("--repeat", type=_positive_int, default=1)
+    search = subparsers.add_parser("search", help="benchmark vector-fallback search()")
+    search.add_argument("--sizes", default="10000,100000")
+    search.add_argument("--repeat", type=_positive_int, default=1)
     args = parser.parse_args()
 
     if args.case == "stats":
@@ -73,6 +170,14 @@ def main() -> int:
         result = {
             "case": "stats_correlation",
             "results": [benchmark_stats(size, args.repeat) for size in sizes],
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.case == "search":
+        sizes = [_positive_int(value.strip()) for value in args.sizes.split(",")]
+        result = {
+            "case": "vector_fallback_search",
+            "results": [benchmark_search(size, args.repeat) for size in sizes],
         }
         print(json.dumps(result, indent=2))
         return 0

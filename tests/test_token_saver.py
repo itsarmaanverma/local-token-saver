@@ -293,6 +293,63 @@ class FixesAndPipelineTest(unittest.TestCase):
         self.assertGreater(cosine(a, b), cosine(a, c))
         self.assertAlmostEqual(cosine(a, a), 1.0, places=5)
 
+    def test_vector_fallback_gate_tiebreak_and_text_fetch(self):
+        """E02: the bounded-heap fallback must reproduce the old
+        materialize-everything-then-sort semantics exactly -- same gate,
+        same score ordering, same ascending-chunk-id tie-break -- and must
+        fetch the correct text for each surviving winner, not a swapped one.
+        """
+        from array import array
+
+        from token_saver.indexer import connect
+        from token_saver.retrieval import _vector_fallback_search
+        from token_saver.vectors import to_blob
+
+        con = connect(self.tmp)
+
+        def make_vec(x0):
+            v = array("f", [0.0] * 384)
+            v[0] = x0
+            return v
+
+        # (path, cosine-along-dim0): three-way tie at 0.9, one clear winner
+        # at 0.95, one below the hashed_tf gate (0.35) that must be excluded.
+        specs = [("a.md", 0.9), ("b.md", 0.9), ("c.md", 0.2),
+                 ("d.md", 0.9), ("e.md", 0.95)]
+        cid_by_path = {}
+        for i, (path, x0) in enumerate(specs):
+            fcur = con.execute(
+                "INSERT INTO files(path, sha256, mtime, size, ftype, ntokens) "
+                "VALUES (?,?,?,?,?,?)", (path, f"sha{i}", 0.0, 10, "md", 5))
+            ccur = con.execute(
+                "INSERT INTO chunks(file_id, path, section, heading_path, start_line, "
+                "end_line, page, text, ntokens) VALUES (?,?,?,?,?,?,?,?,?)",
+                (fcur.lastrowid, path, "", "", 1, 1, None, f"text for {path}", 5))
+            cid_by_path[path] = ccur.lastrowid
+            con.execute("INSERT INTO vectors(chunk_id, vec) VALUES (?,?)",
+                        (ccur.lastrowid, to_blob(make_vec(x0))))
+        con.commit()
+
+        qvec = array("f", [1.0] + [0.0] * 383)  # dot product == x0 directly
+
+        class StubEmbedder:
+            name = "hashed_tf"
+
+        hits = _vector_fallback_search(con, qvec, set(), StubEmbedder(), top_k=3)
+        con.close()
+
+        self.assertEqual(len(hits), 3)
+        self.assertNotIn("c.md", {h.path for h in hits})  # below gate
+        self.assertEqual(hits[0].path, "e.md")             # clear winner first
+        for h in hits:
+            self.assertEqual(h.text, f"text for {h.path}")  # winner text not swapped
+
+        # Tie group {a,b,d} at cos 0.9 has 2 remaining slots -- ascending
+        # chunk id wins, matching the old stable-sort-by-score behavior.
+        tied_ids = sorted(cid_by_path[p] for p in ("a.md", "b.md", "d.md"))
+        kept_tied = sorted(h.chunk_id for h in hits if h.path != "e.md")
+        self.assertEqual(kept_tied, tied_ids[:2])
+
 
 if __name__ == "__main__":
     unittest.main()
