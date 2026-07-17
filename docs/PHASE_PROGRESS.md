@@ -35,8 +35,14 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: Old code at 1,000 chunks: 7.413 MB peak / 0.148s median; it crashed at 10,000/100,000 chunks with `sqlite3.OperationalError: too many SQL variables` (the old `vectors WHERE chunk_id IN (...)` built one placeholder per row -- a real correctness bug beyond the memory-efficiency target). New code succeeds at all three sizes with flat ~0.10 MB peak and 0.072/1.164/9.276s median; the 1,000-chunk ranked output is byte-identical to the old code's, confirming preserved ranking and tie-break order. Full suite is 90 passed, 5 skipped, only the known P02 Windows failure (added one regression test covering gate filtering, tie-break order, and correct text-for-winner fetch). Changed-file Ruff and compileall passed (two pre-existing, out-of-scope findings left untouched: E741 in `retrieval.py`, F401 in `test_token_saver.py`, both present on `HEAD` before this change).
   - Commits: Start checkpoint `ae0b063`; implementation `ec35044`; completion checkpoint is the commit containing this checklist update.
   - Handoff: Stop for user approval. When approved, E03 must first capture JSONL-report baselines before editing `stats.py`.
-- [ ] **E03 — Scalable JSONL reporting**
-- [ ] **E04 — Streaming CSV sampling**
+- [~] **E03 — Scalable JSONL reporting**
+  - Status: active
+  - Owner: claude
+  - Claim: `cc4ef50f`
+- [~] **E04 — Streaming CSV sampling**
+  - Status: active
+  - Owner: claude
+  - Claim: `5bc6204f`
 - [ ] **E05 — Streaming scan and re-embedding**
 - [ ] **E06 — Strong incremental fingerprints**
 - [ ] **E07 — Explicit PDF cache identity**
@@ -46,7 +52,17 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-E02 is complete and no task is active. E03 is the next unchecked task, but it must not begin without explicit user approval.
+E03 and E04 are both active (claims `cc4ef50f`, `5bc6204f`, owner claude), run
+concurrently by explicit user direction as a one-off departure from the
+default "exactly one active task" rule -- justified here because their file
+scopes are fully disjoint (`stats.py`+`test_stats.py` vs `parsers.py`+
+`test_parsers.py`, no shared source/test files) and both claims were verified
+non-conflicting via `mesh check` before starting. Shared artifacts
+(`scripts/benchmark_efficiency.py`, this file, `.agent-mesh/*`) are edited by
+a single owner only, sequenced after both implementations land, to avoid the
+concurrent-write risk this project's sequential mode normally guards against.
+Do not treat this as the new default -- revert to one task at a time after
+E04 completes.
 
 Completed claim: `e5bf4a76`
 

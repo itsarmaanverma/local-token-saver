@@ -49,6 +49,40 @@
       "claimed_at": "2026-07-17T19:32:32Z",
       "heartbeat_at": "2026-07-17T19:55:52Z",
       "notes": "Bound search() vector-fallback memory: stream metadata/vectors, keep only top_k in a heap, fetch text only for winners; preserve ranking and deterministic ties."
+    },
+    {
+      "id": "cc4ef50f",
+      "title": "E03 scalable JSONL reporting",
+      "scope": [
+        "src/token_saver/stats.py",
+        "tests/test_stats.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "claimed",
+      "claimed_at": "2026-07-17T20:56:17Z",
+      "heartbeat_at": "2026-07-17T20:56:17Z",
+      "notes": "Backward-read newest N rows from EOF in load_events; thread-safe single-write append_event (proxy.py runs ThreadingHTTPServer)."
+    },
+    {
+      "id": "5bc6204f",
+      "title": "E04 streaming CSV sampling",
+      "scope": [
+        "src/token_saver/parsers.py",
+        "tests/test_parsers.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "claimed",
+      "claimed_at": "2026-07-17T20:56:17Z",
+      "heartbeat_at": "2026-07-17T20:56:17Z",
+      "notes": "Stream parse_csv rows instead of materializing the full table; keep first-20 sample + incremental count."
     }
   ]
 }
