@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import threading
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from token_saver.stats import (
     est_dollars_saved,
     estimate_tokens,
     iter_events,
+    load_events,
     rows_by_stage,
     stage,
     summarize_events,
@@ -460,3 +462,113 @@ def test_correlate_excludes_used_row_from_transformed_ambiguity():
 
     assert [row["req_body_sha8"] for row in matched] == ["exact", "other"]
     assert (exact, transformed, ambiguous) == (1, 1, 0)
+
+
+# ---------------------------------------------------------------------------
+# load_events: backward-from-EOF reader (E03)
+# ---------------------------------------------------------------------------
+
+
+def test_load_events_returns_newest_rows_in_chronological_order(tmp_path):
+    log = tmp_path / "events.jsonl"
+    total = 500
+    limit = 50
+    for i in range(total):
+        assert append_event(log, {"ts": i, "seq": i}) is True
+
+    rows = load_events(log, limit=limit)
+
+    expected = [{"ts": i, "seq": i} for i in range(total - limit, total)]
+    assert rows == expected
+    # Matches the old full-scan semantics exactly.
+    from collections import deque
+    assert rows == list(deque(iter_events(log), maxlen=limit))
+
+
+def test_load_events_skips_malformed_lines_near_eof_without_miscounting(tmp_path):
+    log = tmp_path / "events.jsonl"
+    for i in range(20):
+        assert append_event(log, {"ts": i, "seq": i}) is True
+
+    # Corrupt lines scattered near the end of the file.
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("not json at all\n")
+        f.write("\n")
+        f.write("{broken json\n")
+
+    for i in range(20, 25):
+        assert append_event(log, {"ts": i, "seq": i}) is True
+
+    with open(log, "a", encoding="utf-8") as f:
+        f.write("{also broken\n")
+
+    rows = load_events(log, limit=10)
+
+    expected = [{"ts": i, "seq": i} for i in range(15, 25)]
+    assert rows == expected
+
+
+def test_load_events_returns_everything_when_file_smaller_than_limit(tmp_path):
+    log = tmp_path / "events.jsonl"
+    for i in range(7):
+        assert append_event(log, {"ts": i, "seq": i}) is True
+
+    rows = load_events(log, limit=100)
+
+    assert rows == [{"ts": i, "seq": i} for i in range(7)]
+
+
+def test_load_events_exact_limit_row_count(tmp_path):
+    log = tmp_path / "events.jsonl"
+    for i in range(30):
+        assert append_event(log, {"ts": i, "seq": i}) is True
+
+    rows = load_events(log, limit=30)
+
+    assert rows == [{"ts": i, "seq": i} for i in range(30)]
+
+
+def test_load_events_handles_missing_trailing_newline(tmp_path):
+    log = tmp_path / "events.jsonl"
+    lines = [json.dumps({"ts": i, "seq": i}) for i in range(5)]
+    log.write_text("\n".join(lines), encoding="utf-8")  # no trailing newline
+
+    rows = load_events(log, limit=3)
+
+    assert rows == [{"ts": i, "seq": i} for i in range(2, 5)]
+
+
+def test_load_events_empty_file(tmp_path):
+    log = tmp_path / "events.jsonl"
+    log.write_text("", encoding="utf-8")
+
+    assert load_events(log, limit=10) == []
+
+
+def test_load_events_missing_file_returns_empty_list(tmp_path):
+    assert load_events(tmp_path / "does-not-exist.jsonl", limit=10) == []
+
+
+def test_append_event_is_thread_safe_under_concurrent_writers(tmp_path):
+    log = tmp_path / "events.jsonl"
+    thread_count = 8
+    appends_per_thread = 50
+    total = thread_count * appends_per_thread
+
+    def worker(thread_id: int) -> None:
+        for i in range(appends_per_thread):
+            append_event(log, {"ts": thread_id * appends_per_thread + i, "thread": thread_id, "i": i})
+
+    threads = [threading.Thread(target=worker, args=(t,)) for t in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == total
+
+    for line in lines:
+        row = json.loads(line)  # raises if any line is corrupted/interleaved
+        assert isinstance(row, dict)
+        assert "ts" in row and "thread" in row and "i" in row

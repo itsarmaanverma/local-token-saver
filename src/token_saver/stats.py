@@ -6,7 +6,7 @@ import json
 import math
 import os
 import sqlite3
-from collections import deque
+import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -83,14 +83,22 @@ def workspace_log_path(root: str | Path) -> Path:
     return Path(root) / ".tokensaver" / "events.jsonl"
 
 
+_APPEND_LOCK = threading.Lock()
+
+_REVERSE_CHUNK_SIZE = 65536
+_NEWLINE_BYTE = b"\n"
+
+
 def append_event(path: str | Path, event: Event | dict[str, Any]) -> bool:
     """Append a compact event without allowing telemetry to break the caller."""
     try:
         target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
         row = event.to_dict() if isinstance(event, Event) else dict(event)
-        with target.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
+        line = json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with _APPEND_LOCK:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("a", encoding="utf-8") as stream:
+                stream.write(line)
         return True
     except Exception:
         return False
@@ -111,9 +119,73 @@ def iter_events(path: str | Path) -> Iterator[dict[str, Any]]:
         return
 
 
+def _parse_candidate_line(line: bytes) -> dict[str, Any] | None:
+    """Decode+parse one raw line the same way ``iter_events`` does; None if invalid."""
+    try:
+        text = line.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    try:
+        row = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return row if isinstance(row, dict) else None
+
+
+def _iter_events_reverse(path: str | Path, limit: int) -> Iterator[dict[str, Any]]:
+    """Yield up to ``limit`` newest valid rows, newest first, reading backward from EOF.
+
+    Stops as soon as ``limit`` rows are collected or the start of the file is
+    reached, avoiding a full forward scan when ``limit`` is much smaller than
+    the total row count. Tolerates malformed lines and a missing file exactly
+    like ``iter_events``.
+    """
+    try:
+        with Path(path).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            position = stream.tell()
+            carry = b""
+            found = 0
+            while position > 0 and found < limit:
+                read_size = min(_REVERSE_CHUNK_SIZE, position)
+                position -= read_size
+                stream.seek(position)
+                chunk = stream.read(read_size)
+                buffer = chunk + carry
+                lines = buffer.split(_NEWLINE_BYTE)
+                # The first fragment may be a partial line continued by the
+                # previous (earlier-in-file) chunk; carry it forward.
+                carry = lines[0]
+                complete_lines = lines[1:]
+                for raw_line in reversed(complete_lines):
+                    if not raw_line:
+                        continue
+                    row = _parse_candidate_line(raw_line)
+                    if row is None:
+                        continue
+                    yield row
+                    found += 1
+                    if found >= limit:
+                        return
+            if found < limit and carry:
+                row = _parse_candidate_line(carry)
+                if row is not None:
+                    yield row
+    except OSError:
+        return
+
+
 def load_events(path: str | Path, limit: int = MAX_REPORT_ROWS) -> list[dict[str, Any]]:
-    """Read at most the newest ``limit`` rows from an append-only log."""
-    return list(deque(iter_events(path), maxlen=max(1, limit)))
+    """Read at most the newest ``limit`` rows from an append-only log.
+
+    Returns rows in chronological (file) order, identical to the prior
+    ``list(deque(iter_events(path), maxlen=limit))`` semantics, but reads the
+    file backward from EOF so it need not scan rows older than the window.
+    """
+    bounded_limit = max(1, limit)
+    rows = list(_iter_events_reverse(path, bounded_limit))
+    rows.reverse()
+    return rows
 
 
 def estimate_tokens(text: str) -> int:
