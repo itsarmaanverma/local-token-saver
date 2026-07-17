@@ -31,6 +31,24 @@
       "claimed_at": "2026-07-17T19:10:16Z",
       "heartbeat_at": "2026-07-17T19:16:39Z",
       "notes": "Preserve correlation semantics while replacing full model-group rescans with bounded timestamp-window lookup."
+    },
+    {
+      "id": "e5bf4a76",
+      "title": "E02 bounded pure-vector fallback memory",
+      "scope": [
+        "src/token_saver/retrieval.py",
+        "tests/test_retrieval.py",
+        "scripts/benchmark_efficiency.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "claimed",
+      "claimed_at": "2026-07-17T19:32:32Z",
+      "heartbeat_at": "2026-07-17T19:32:32Z",
+      "notes": "Bound search() vector-fallback memory: stream metadata/vectors, keep only top_k in a heap, fetch text only for winners; preserve ranking and deterministic ties."
     }
   ]
 }

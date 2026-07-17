@@ -28,7 +28,10 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: Baseline 1k/2k/4k was 0.053/0.210/0.907 seconds. Optimized 1k/10k/100k median was 0.002/0.026/0.458 seconds. Stats tests passed; full suite is 89 passed, 5 skipped, and only the known P02 Windows failure. Changed-file Ruff and compileall passed.
   - Commits: Start checkpoint `d19baf6`; implementation `22efabb`; completion checkpoint is the commit containing this checklist update.
   - Handoff: Stop for user approval. When approved, E02 must first capture search-fallback ranking and peak-memory baselines before editing `retrieval.py`.
-- [ ] **E02 — Bounded vector-fallback memory**
+- [~] **E02 — Bounded vector-fallback memory**
+  - Status: active
+  - Owner: claude
+  - Claim: `e5bf4a76`
 - [ ] **E03 — Scalable JSONL reporting**
 - [ ] **E04 — Streaming CSV sampling**
 - [ ] **E05 — Streaming scan and re-embedding**
@@ -40,7 +43,9 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-E01 is complete and no task is active. E02 is the next unchecked task, but it must not begin without explicit user approval.
+E02 is active (claim `e5bf4a76`, owner claude): bound the pure-vector fallback in
+`retrieval.py::search()` -- stream metadata/vectors, keep only top_k in a heap,
+fetch text only for winners; preserve ranking and deterministic ties.
 
 Completed claim: `282027b0`
 
