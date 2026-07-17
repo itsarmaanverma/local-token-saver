@@ -28,10 +28,13 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: Baseline 1k/2k/4k was 0.053/0.210/0.907 seconds. Optimized 1k/10k/100k median was 0.002/0.026/0.458 seconds. Stats tests passed; full suite is 89 passed, 5 skipped, and only the known P02 Windows failure. Changed-file Ruff and compileall passed.
   - Commits: Start checkpoint `d19baf6`; implementation `22efabb`; completion checkpoint is the commit containing this checklist update.
   - Handoff: Stop for user approval. When approved, E02 must first capture search-fallback ranking and peak-memory baselines before editing `retrieval.py`.
-- [~] **E02 — Bounded vector-fallback memory**
-  - Status: active
+- [x] **E02 — Bounded vector-fallback memory**
+  - Status: complete
   - Owner: claude
-  - Claim: `e5bf4a76`
+  - Summary: Replaced the full-table materialize-text-and-vectors-then-sort pure-vector fallback in `retrieval.py::search()` with a streaming `chunks LEFT JOIN vectors` scan scored into a bounded top_k min-heap keyed on `(score, -chunk_id)` for deterministic ascending-id tie-breaks, then a final `chunks` fetch for only the winning ids' text.
+  - Verification: Old code at 1,000 chunks: 7.413 MB peak / 0.148s median; it crashed at 10,000/100,000 chunks with `sqlite3.OperationalError: too many SQL variables` (the old `vectors WHERE chunk_id IN (...)` built one placeholder per row -- a real correctness bug beyond the memory-efficiency target). New code succeeds at all three sizes with flat ~0.10 MB peak and 0.072/1.164/9.276s median; the 1,000-chunk ranked output is byte-identical to the old code's, confirming preserved ranking and tie-break order. Full suite is 90 passed, 5 skipped, only the known P02 Windows failure (added one regression test covering gate filtering, tie-break order, and correct text-for-winner fetch). Changed-file Ruff and compileall passed (two pre-existing, out-of-scope findings left untouched: E741 in `retrieval.py`, F401 in `test_token_saver.py`, both present on `HEAD` before this change).
+  - Commits: Start checkpoint `ae0b063`; implementation `ec35044`; completion checkpoint is the commit containing this checklist update.
+  - Handoff: Stop for user approval. When approved, E03 must first capture JSONL-report baselines before editing `stats.py`.
 - [ ] **E03 — Scalable JSONL reporting**
 - [ ] **E04 — Streaming CSV sampling**
 - [ ] **E05 — Streaming scan and re-embedding**
@@ -43,11 +46,9 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-E02 is active (claim `e5bf4a76`, owner claude): bound the pure-vector fallback in
-`retrieval.py::search()` -- stream metadata/vectors, keep only top_k in a heap,
-fetch text only for winners; preserve ranking and deterministic ties.
+E02 is complete and no task is active. E03 is the next unchecked task, but it must not begin without explicit user approval.
 
-Completed claim: `282027b0`
+Completed claim: `e5bf4a76`
 
 ## Resume Instructions
 

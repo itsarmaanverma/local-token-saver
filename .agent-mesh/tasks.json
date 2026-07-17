@@ -45,9 +45,9 @@
         ".agent-mesh/tasks.json"
       ],
       "owner": "claude",
-      "status": "claimed",
+      "status": "done",
       "claimed_at": "2026-07-17T19:32:32Z",
-      "heartbeat_at": "2026-07-17T19:32:32Z",
+      "heartbeat_at": "2026-07-17T19:55:52Z",
       "notes": "Bound search() vector-fallback memory: stream metadata/vectors, keep only top_k in a heap, fetch text only for winners; preserve ranking and deterministic ties."
     }
   ]
