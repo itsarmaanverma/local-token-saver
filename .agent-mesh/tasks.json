@@ -96,9 +96,9 @@
         ".agent-mesh/tasks.json"
       ],
       "owner": "claude",
-      "status": "claimed",
+      "status": "done",
       "claimed_at": "2026-07-17T21:51:26Z",
-      "heartbeat_at": "2026-07-17T21:51:26Z",
+      "heartbeat_at": "2026-07-17T22:00:21Z",
       "notes": "scan_files as iterator; fetchmany/executemany batched re-embed on backend mismatch; per-file savepoint protection + failure reporting."
     }
   ]
