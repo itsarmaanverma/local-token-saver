@@ -147,6 +147,79 @@ def benchmark_search(count: int, repeat: int) -> dict[str, Any]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def benchmark_jsonl(count: int, repeat: int) -> dict[str, int | float]:
+    """Benchmark load_events with synthetic append-only JSONL log."""
+    from token_saver.stats import load_events
+
+    root = Path(tempfile.mkdtemp(prefix="tsbench_jsonl_"))
+    log_path = root / "events.jsonl"
+
+    try:
+        # Write synthetic JSONL
+        with open(log_path, "w") as f:
+            for i in range(count):
+                row = {"ts": i, "method": "POST", "status": 200}
+                f.write(json.dumps(row) + "\n")
+
+        timings = []
+        peak_bytes = 0
+        rows_returned = 0
+        for _ in range(repeat):
+            tracemalloc.start()
+            started = time.perf_counter()
+            rows = load_events(str(log_path), limit=100)
+            timings.append(time.perf_counter() - started)
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            peak_bytes = max(peak_bytes, peak)
+            rows_returned = len(rows)
+        if rows_returned != min(count, 100):
+            raise RuntimeError("jsonl benchmark returned an unexpected row count")
+
+        return {
+            "total_rows": count,
+            "limit": 100,
+            "rows_returned": rows_returned,
+            "median_seconds": round(statistics.median(timings), 6),
+            "peak_memory_mb": round(peak_bytes / (1024 * 1024), 3),
+            "repeat": repeat,
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def benchmark_csv(count: int, repeat: int) -> dict[str, int | float]:
+    """Benchmark parse_csv with synthetic large CSV."""
+    from token_saver.parsers import parse_csv
+
+    # Build synthetic CSV
+    header = "id,method,status,message\n"
+    rows = [f"{i},POST,200,msg_{i}\n" for i in range(count)]
+    text = header + "".join(rows)
+
+    timings = []
+    peak_bytes = 0
+    chunks_returned = 0
+    for _ in range(repeat):
+        tracemalloc.start()
+        started = time.perf_counter()
+        chunks = parse_csv(text, "bench.csv", 1600)
+        timings.append(time.perf_counter() - started)
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        peak_bytes = max(peak_bytes, peak)
+        chunks_returned = len(chunks)
+    if chunks_returned != 1:
+        raise RuntimeError("csv benchmark produced an unexpected chunk count")
+
+    return {
+        "data_rows": count,
+        "median_seconds": round(statistics.median(timings), 6),
+        "peak_memory_mb": round(peak_bytes / (1024 * 1024), 3),
+        "repeat": repeat,
+    }
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -163,6 +236,12 @@ def main() -> int:
     search = subparsers.add_parser("search", help="benchmark vector-fallback search()")
     search.add_argument("--sizes", default="10000,100000")
     search.add_argument("--repeat", type=_positive_int, default=1)
+    jsonl = subparsers.add_parser("jsonl", help="benchmark load_events on synthetic JSONL")
+    jsonl.add_argument("--sizes", default="1000,10000,100000")
+    jsonl.add_argument("--repeat", type=_positive_int, default=1)
+    csv = subparsers.add_parser("csv", help="benchmark parse_csv on synthetic CSV")
+    csv.add_argument("--sizes", default="1000,10000,100000")
+    csv.add_argument("--repeat", type=_positive_int, default=1)
     args = parser.parse_args()
 
     if args.case == "stats":
@@ -178,6 +257,22 @@ def main() -> int:
         result = {
             "case": "vector_fallback_search",
             "results": [benchmark_search(size, args.repeat) for size in sizes],
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.case == "jsonl":
+        sizes = [_positive_int(value.strip()) for value in args.sizes.split(",")]
+        result = {
+            "case": "load_events_jsonl",
+            "results": [benchmark_jsonl(size, args.repeat) for size in sizes],
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.case == "csv":
+        sizes = [_positive_int(value.strip()) for value in args.sizes.split(",")]
+        result = {
+            "case": "parse_csv_streaming",
+            "results": [benchmark_csv(size, args.repeat) for size in sizes],
         }
         print(json.dumps(result, indent=2))
         return 0
