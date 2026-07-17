@@ -19,3 +19,9 @@ Append-only. Each agent adds a `## HANDOFF` block; never edit or delete prior bl
 **Done:** E02 replaced the crash-prone, full-materialize pure-vector fallback in retrieval.py::search() with a streaming chunks LEFT JOIN vectors scan into a bounded top_k min-heap; text fetched only for winners. Fixed a real crash (too many SQL variables) the old code hit past ~1k chunks on this path, not just the memory-efficiency target. Ranking verified byte-identical to old code at 1,000 chunks; 90 passed / 5 skipped / known P02 failure only.
 **Next:** Stop for user approval. When approved, claim E03 only and capture JSONL-report baselines before editing stats.py.
 **Files touched:** src/token_saver/retrieval.py, tests/test_token_saver.py, scripts/benchmark_efficiency.py, docs/PHASE_PROGRESS.md, .agent-mesh/*
+
+## HANDOFF claude -> any | general | 2026-07-17T21:10:58Z
+**Task:** (project-level handoff)
+**Done:** E03+E04 complete, run concurrently by explicit user direction on disjoint file scopes (stats.py+test_stats.py vs parsers.py+test_parsers.py), built by two parallel subagents with no shared file access, integrated/verified/committed by a single owner. E03: load_events now reads backward from EOF instead of full forward scan; append_event now thread-safe (proxy.py's ThreadingHTTPServer calls it concurrently). E04: parse_csv streams rows instead of materializing the whole table, ~4x peak-memory reduction verified old-vs-new. Full suite 106 passed / 5 skipped / known P02 failure only.
+**Next:** Stop for user approval. When approved, claim E05 only and capture streaming-scan/re-embedding baselines before editing indexer.py. Revert to strict one-task-at-a-time (this parallel run was a one-off, not the new default).
+**Files touched:** src/token_saver/stats.py, tests/test_stats.py, src/token_saver/parsers.py, tests/test_parsers.py, scripts/benchmark_efficiency.py, docs/PHASE_PROGRESS.md, .agent-mesh/*
