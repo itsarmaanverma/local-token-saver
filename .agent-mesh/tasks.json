@@ -27,9 +27,9 @@
         ".agent-mesh/**"
       ],
       "owner": "codex",
-      "status": "claimed",
+      "status": "done",
       "claimed_at": "2026-07-17T19:10:16Z",
-      "heartbeat_at": "2026-07-17T19:10:16Z",
+      "heartbeat_at": "2026-07-17T19:16:39Z",
       "notes": "Preserve correlation semantics while replacing full model-group rescans with bounded timestamp-window lookup."
     }
   ]

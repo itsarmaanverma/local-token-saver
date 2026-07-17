@@ -19,15 +19,15 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Owner: codex
   - Summary: Created the durable Desktop clone, phased branch, sequential mesh board, checklist, backlog, and matching Claude/Codex continuation instructions.
   - Verification: Sequential mode confirmed; a Claude-owned check was blocked from the active Codex scope while the Codex check passed. The final `any` handoff was appended for resume testing.
-  - Commits: Start checkpoint `3fae635`; completion checkpoint pending this commit.
+  - Commits: Start checkpoint `3fae635`; completion checkpoint `78471f7`.
   - Handoff: E01 is the only next task. First claim `stats_report.py`, `test_stats.py`, the benchmark script, and progress artifacts, then capture the baseline before editing correlation.
-- [~] **E01 — Sub-quadratic stats correlation**
-  - Status: active
+- [x] **E01 — Sub-quadratic stats correlation**
+  - Status: complete
   - Owner: codex
-  - Summary: Pending.
-  - Verification: Pending baseline, semantic regression tests, and 100,000-row benchmark.
-  - Commits: Pending.
-  - Handoff: Preserve exact-hash priority, one-to-one consumption, transformed ambiguity rules, and original-order tie behavior.
+  - Summary: Replaced per-proxy full-group scans with timestamp-sorted exact `(model, hash)` and compressed-model indexes. Added a reusable benchmark and five regressions covering ties, single consumption, exact priority, invalid windows, and used-row ambiguity.
+  - Verification: Baseline 1k/2k/4k was 0.053/0.210/0.907 seconds. Optimized 1k/10k/100k median was 0.002/0.026/0.458 seconds. Stats tests passed; full suite is 89 passed, 5 skipped, and only the known P02 Windows failure. Changed-file Ruff and compileall passed.
+  - Commits: Start checkpoint `d19baf6`; implementation `22efabb`; completion checkpoint is the commit containing this checklist update.
+  - Handoff: Stop for user approval. When approved, E02 must first capture search-fallback ranking and peak-memory baselines before editing `retrieval.py`.
 - [ ] **E02 — Bounded vector-fallback memory**
 - [ ] **E03 — Scalable JSONL reporting**
 - [ ] **E04 — Streaming CSV sampling**
@@ -40,9 +40,9 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-E01 is active. Only stats correlation, its tests, the reusable benchmark script, and progress artifacts are in scope.
+E01 is complete and no task is active. E02 is the next unchecked task, but it must not begin without explicit user approval.
 
-Active claim: `282027b0`
+Completed claim: `282027b0`
 
 ## Resume Instructions
 
