@@ -163,6 +163,25 @@
       "claimed_at": "2026-07-17T23:07:20Z",
       "heartbeat_at": "2026-07-17T23:12:11Z",
       "notes": "Skip all links by default; constrain enabled traversal to internal targets with cycle prevention and pre-read revalidation."
+    },
+    {
+      "id": "a885b562",
+      "title": "P02 indexed-only streaming source slices",
+      "scope": [
+        "src/token_saver/retrieval.py",
+        "src/token_saver/cli.py",
+        "tests/test_token_saver.py",
+        "scripts/benchmark_efficiency.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:49:26Z",
+      "heartbeat_at": "2026-07-17T23:49:29Z",
+      "notes": "Stream get_source_slice line-by-line; reject escaping/ignored/unindexed/changed files; validate ranges; cap at 2000 lines; fix Windows containment regression in cmd_summarize."
     }
   ]
 }

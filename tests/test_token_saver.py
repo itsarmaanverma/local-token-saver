@@ -242,6 +242,79 @@ class FixesAndPipelineTest(unittest.TestCase):
         rc = cli_main(["summarize", "/etc/passwd", str(self.tmp)])
         self.assertEqual(rc, 1)  # clean error, no traceback
 
+    def test_summarize_relative_dotdot_escape(self):
+        """cmd_summarize's containment check must catch ".." escapes too --
+        the old is_absolute()-branched logic never even attempted a
+        containment check for non-absolute targets."""
+        from token_saver.cli import main as cli_main
+        self._init_index()
+        rc = cli_main(["summarize", "../outside.txt", str(self.tmp)])
+        self.assertEqual(rc, 1)
+
+    def test_source_slice_windows_rootless_absolute_escape(self):
+        """"/etc/passwd" has no drive letter, so Path.is_absolute() reports
+        False on Windows -- the P02 fix must not rely on is_absolute() to
+        detect an escape (this is the known Windows containment regression)."""
+        self._init_index()
+        with self.assertRaises(ValueError):
+            get_source_slice(self.tmp, "/etc/passwd")
+
+    def test_source_slice_invalid_ranges(self):
+        (self.tmp / "a.md").write_text("# renewal terms\nline2\nline3\n", encoding="utf-8")
+        self._init_index()
+        with self.assertRaises(ValueError):
+            get_source_slice(self.tmp, "a.md", start=0)
+        with self.assertRaises(ValueError):
+            get_source_slice(self.tmp, "a.md", start=5, end=3)
+
+    def test_source_slice_rejects_ignored_file(self):
+        (self.tmp / "node_modules").mkdir()
+        (self.tmp / "node_modules" / "lib.js").write_text("var x = 1;\n", encoding="utf-8")
+        self._init_index()
+        with self.assertRaises(ValueError) as ctx:
+            get_source_slice(self.tmp, "node_modules/lib.js")
+        self.assertIn("ignored", str(ctx.exception))
+
+    def test_source_slice_rejects_unindexed_file(self):
+        self._init_index()
+        (self.tmp / "new_untracked.md").write_text("# not yet indexed\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            get_source_slice(self.tmp, "new_untracked.md")
+        self.assertIn("not indexed", str(ctx.exception))
+
+    def test_source_slice_rejects_changed_file(self):
+        f = self.tmp / "a.md"
+        f.write_text("# renewal terms\nline2\nline3\n", encoding="utf-8")
+        self._init_index()
+        f.write_text("# renewal terms MUTATED\nline2\nline3\nline4\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            get_source_slice(self.tmp, "a.md")
+        self.assertIn("changed", str(ctx.exception))
+
+    def test_source_slice_caps_output_at_2000_lines(self):
+        big = self.tmp / "big.txt"
+        big.write_text("".join(f"line {i}\n" for i in range(2500)), encoding="utf-8")
+        self._init_index()
+        out = get_source_slice(self.tmp, "big.txt", start=1, end=2500)
+        header, _, body = out.partition("\n")
+        self.assertEqual(header, "big.txt:1-2000")
+        self.assertEqual(body.count("\n") + 1, 2000)
+
+    def test_cli_slice_clean_error_on_unindexed_file(self):
+        from token_saver.cli import main as cli_main
+        self._init_index()
+        (self.tmp / "untracked.md").write_text("# nope\n", encoding="utf-8")
+        rc = cli_main(["slice", "untracked.md", "--path", str(self.tmp)])
+        self.assertEqual(rc, 1)  # clean error, no traceback
+
+    def test_mcp_slice_clean_error_on_escape(self):
+        self._init_index()
+        srv = Server(str(self.tmp))
+        bad = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "get_source_slice",
+                                     "arguments": {"file": "../outside.txt"}}})
+        self.assertTrue(bad["result"].get("isError"))
+
     def test_mcp_int_coercion(self):
         (self.tmp / "a.md").write_text("# renewal terms apply here", encoding="utf-8")
         self._init_index()

@@ -8,6 +8,7 @@ Run from an installed checkout, for example:
     python scripts/benchmark_efficiency.py csv --sizes 1000,10000,100000
     python scripts/benchmark_efficiency.py reembed --sizes 10000,100000
     python scripts/benchmark_efficiency.py incremental --sizes 1000,10000
+    python scripts/benchmark_efficiency.py slice --sizes 1000,10000,100000
 """
 from __future__ import annotations
 
@@ -335,6 +336,58 @@ def benchmark_incremental(count: int, repeat: int) -> dict[str, int | float]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _slice_workspace(line_count: int) -> Path:
+    """Build an indexed workspace with one large text file of `line_count` lines."""
+    from token_saver.config import init_workspace
+    from token_saver.indexer import index_workspace
+
+    root = Path(tempfile.mkdtemp(prefix="tsbench_slice_"))
+    text = "".join(
+        f"line {i} of the benchmark file with some padding content for realism\n"
+        for i in range(line_count)
+    )
+    (root / "big.txt").write_text(text, encoding="utf-8")
+    init_workspace(root)
+    index_workspace(root)
+    return root
+
+
+def benchmark_slice(count: int, repeat: int) -> dict[str, int | float]:
+    """Peak-memory probe for get_source_slice reading a small window of a large file.
+
+    The old implementation read the whole file with `.read_text().splitlines()`
+    before slicing, so peak memory grew with file size even for a 10-line
+    request. The streaming line-by-line reader should keep memory flat as
+    `count` grows across 1k/10k/100k lines.
+    """
+    from token_saver.retrieval import get_source_slice
+
+    root = _slice_workspace(count)
+    try:
+        timings = []
+        peak_bytes = 0
+        out = ""
+        for _ in range(repeat):
+            tracemalloc.start()
+            started = time.perf_counter()
+            out = get_source_slice(root, "big.txt", 1, 10)
+            timings.append(time.perf_counter() - started)
+            _, peak = tracemalloc.get_traced_memory()
+            tracemalloc.stop()
+            peak_bytes = max(peak_bytes, peak)
+        if "line 0 of" not in out:
+            raise RuntimeError("slice benchmark returned unexpected content")
+        return {
+            "file_lines": count,
+            "requested_lines": 10,
+            "median_seconds": round(statistics.median(timings), 6),
+            "peak_memory_mb": round(peak_bytes / (1024 * 1024), 3),
+            "repeat": repeat,
+        }
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -364,6 +417,10 @@ def main() -> int:
         "incremental", help="benchmark cold vs. warm (unchanged-tree) index_workspace()")
     incremental.add_argument("--sizes", default="1000,10000")
     incremental.add_argument("--repeat", type=_positive_int, default=1)
+    slice_p = subparsers.add_parser(
+        "slice", help="benchmark streamed get_source_slice on a large file")
+    slice_p.add_argument("--sizes", default="1000,10000,100000")
+    slice_p.add_argument("--repeat", type=_positive_int, default=1)
     args = parser.parse_args()
 
     if args.case == "stats":
@@ -411,6 +468,14 @@ def main() -> int:
         result = {
             "case": "incremental_cold_vs_warm",
             "results": [benchmark_incremental(size, args.repeat) for size in sizes],
+        }
+        print(json.dumps(result, indent=2))
+        return 0
+    if args.case == "slice":
+        sizes = [_positive_int(value.strip()) for value in args.sizes.split(",")]
+        result = {
+            "case": "streamed_source_slice",
+            "results": [benchmark_slice(size, args.repeat) for size in sizes],
         }
         print(json.dumps(result, indent=2))
         return 0

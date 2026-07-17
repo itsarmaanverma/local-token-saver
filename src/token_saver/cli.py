@@ -103,15 +103,18 @@ def cmd_retrieve(args) -> int:
 
 def cmd_summarize(args) -> int:
     root = _ws(args)
-    target = Path(args.target)
-    if target.is_absolute():
-        try:
-            rel = str(target.relative_to(root))
-        except ValueError:
-            print(f"ERROR: {target} is outside workspace {root}", file=sys.stderr)
-            return 1
-    else:
-        rel = str(target)
+    # Join+resolve+relative_to (not Path.is_absolute()) so this catches every
+    # escape form uniformly: ".." relative escapes, genuine absolute paths,
+    # and Windows rootless-absolute paths like "/etc/passwd" that
+    # is_absolute() reports as False (no drive letter) but that still
+    # resolve outside the workspace once joined.
+    root_abs = root.resolve()
+    resolved = (root_abs / args.target).resolve()
+    try:
+        rel = resolved.relative_to(root_abs).as_posix()
+    except ValueError:
+        print(f"ERROR: {args.target} is outside workspace {root_abs}", file=sys.stderr)
+        return 1
     if (root / rel).is_dir() or args.target in (".", ""):
         folder = None if args.target in (".", "") else rel
         result = summarize_folder(root, folder, focus=args.focus)
@@ -270,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.fn(args)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
 

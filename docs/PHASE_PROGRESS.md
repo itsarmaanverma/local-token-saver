@@ -76,14 +76,22 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Summary: Disabled linked files/directories by default; enabled only contained targets with canonical cycle/duplicate prevention, logical-and-resolved ignore enforcement, Windows reparse detection, and authorization immediately before every indexing read. Unsafe paths are retained rather than silently deleting their last safe index state.
   - Verification: 16 focused indexer tests passed, including five end-to-end symlink-boundary scenarios and a Windows reparse regression. Full suite: 126 passed, 6 skipped, with only the documented P02 Windows containment failure. Changed-file Ruff and compileall passed.
   - Handoff: Stop after P01 as requested. P02 is the next unchecked phase and owns the remaining Windows containment failure.
-- [ ] **P02 — Indexed-only streaming source slices**
+- [x] **P02 — Indexed-only streaming source slices**
+  - Status: complete
+  - Owner: claude
+  - Summary: `get_source_slice()` no longer reads the whole file via `read_text().splitlines()`; it streams line-by-line with an early `break` once the requested window is filled. It now rejects (a) paths that escape the workspace -- including the Windows rootless-absolute case (`/etc/passwd` has no drive letter, so `Path.is_absolute()` reports `False` on Windows and previously bypassed containment checks entirely) and symlink escapes, reusing indexer.py's `_authorized_read_path()` follow_symlinks boundary instead of a second ad-hoc check; (b) gitignore-matched paths, via `ignore.load_matcher()`; (c) paths never indexed (no `files` row); (d) paths whose on-disk content has drifted since indexing, reusing the same mtime_ns+size+sampled-fingerprint fast-path with full-SHA256 fallback verification `_index_one()` uses. `start`/`end` are validated positive (`start>=1`, `end>=start`) and the returned window is always capped at `MAX_SLICE_LINES=2000` regardless of the requested range. Also fixed the actual known Windows containment regression: `cmd_summarize()` in `cli.py` branched on `target.is_absolute()` to decide whether to run a containment check at all -- since that reports `False` for rootless-absolute paths on Windows, `/etc/passwd` (and any `../`-relative escape, which the old `else` branch never checked either) fell through untested. Replaced with an unconditional join+resolve+`relative_to()` check (also fixes a latent separate-file-lookup bug where `rel` used OS-native backslash separators against a posix-keyed `files.path` column). CLI's `main()` now also catches `ValueError` (previously only `FileNotFoundError`) so `get_source_slice`/`cmd_summarize` rejections print a clean one-line stderr message and exit 1 instead of a traceback; the MCP server already wraps all tool-call exceptions generically, so no server-side change was needed there.
+  - Verification: `slice` benchmark (peak memory of a 10-line read) at file sizes 1,000/10,000/100,000 lines: flat 0.035 MB peak at all three sizes and 0.011/0.007/0.016s median -- confirms the read never materializes more than the requested window regardless of file size (the old `.read_text().splitlines()` would have scaled with file size). 9 new regression tests: the previously-failing `test_summarize_abs_path_outside_root` now passes plus a new `../`-relative summarize-escape case the old code never checked; a `get_source_slice` Windows rootless-absolute escape case; invalid-range rejection (`start=0`, `end<start`); ignored-file rejection (`node_modules/`); unindexed-file rejection; changed-file rejection (content mutated after indexing, same-ish size); a 2,500-line file capped to exactly 2,000 returned lines; a CLI `slice` clean-error case (rc=1, no traceback) on an unindexed file; an MCP `get_source_slice` clean-error (`isError`) case on a `../` escape. Full suite: 138 passed, 5 skipped, **zero known failures** -- P02 removes the baseline's last remaining Windows containment failure. Changed-file Ruff and compileall passed clean (two pre-existing, out-of-scope findings confirmed present on `HEAD` before this change and left untouched: unused `load_config` import in `cli.py`, unused `json` import in `test_token_saver.py`).
+  - Commits: implementation + tests + benchmark + progress; see the commit containing this checklist update.
+  - Handoff: Stop for user approval. When approved, V01 is the final integration checkpoint: re-run the full suite and every benchmark case across all of E01-P02, confirm zero known failures remain, and close out the branch documentation.
 - [ ] **V01 — Final integration checkpoint**
 
 ## Current Task
 
-E07 and P01 are complete. No implementation phase is active; P02 is the next
-unchecked task and owns indexed-only streaming source slices plus the known
-Windows containment regression.
+P02 is complete: the baseline's one known failure (Windows containment) is
+fixed, and the full suite now passes with zero known failures for the first
+time in this branch. V01 is the next and final unchecked task -- a
+verification/closeout checkpoint (full suite + full benchmark re-run,
+CHANGELOG entry, merge-readiness note), not new feature work.
 
 E05 and E06 were run one after another (not concurrently) by the same
 session in response to a single user go-ahead to do "the next two phases" --
