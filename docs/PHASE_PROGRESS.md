@@ -49,7 +49,10 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: direct old-vs-new peak-memory comparison on identical input: ~4x reduction (3.854 MB -> 0.894 MB at 10k rows; 39.298 MB -> 9.477 MB at 100k rows). The residual growth with input size is the unavoidable cost of `io.StringIO(text)` copying the already-fully-read `text` parameter -- outside `parse_csv`'s contract (`parse_file` reads the file before calling it) and outside this task's scope; what this removes is the *additional* full-row-list materialization on top of that baseline. 8 new tests in new file `tests/test_parsers.py`, including a byte-identical-output check against an inline reference of the old implementation, exactly-20/25-row boundary and count correctness, header-only/empty-string edge cases, TSV delimiter handling, a mid-file `csv.Error` fallback proof, and a 5,000-row functional scale check.
   - Commits: Start checkpoint `1c7897f` (shared with E03); implementation `e515a2b`; completion checkpoint is the commit containing this checklist update.
   - Handoff: Stop for user approval. When approved, E05 must first capture streaming-scan/re-embedding baselines before editing `indexer.py`.
-- [ ] **E05 — Streaming scan and re-embedding**
+- [~] **E05 — Streaming scan and re-embedding**
+  - Status: active
+  - Owner: claude
+  - Claim: `257cb808`
 - [ ] **E06 — Strong incremental fingerprints**
 - [ ] **E07 — Explicit PDF cache identity**
 - [ ] **P01 — Workspace symlink privacy boundary**
@@ -58,8 +61,14 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-E03 and E04 are both complete and no task is active. E05 is the next
-unchecked task, but it must not begin without explicit user approval.
+E05 is active (claim `257cb808`, owner claude): make `scan_files()` an
+iterator, stream backend-mismatch re-embedding with `fetchmany()`/batched
+`executemany()`, and protect each file's replacement with a SQLite
+SAVEPOINT so a mid-file failure can't commit partial state. E06 will follow
+immediately after in the same file (`_index_one()` + `files` schema), run
+sequentially by the same agent since both tasks touch `indexer.py` -- not
+parallelized, consistent with reverting to one-task-at-a-time after the
+E03/E04 one-off.
 
 E03 and E04 were run concurrently by explicit user direction as a one-off
 departure from the default "exactly one active task" rule -- justified

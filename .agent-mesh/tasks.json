@@ -83,6 +83,23 @@
       "claimed_at": "2026-07-17T20:56:17Z",
       "heartbeat_at": "2026-07-17T21:10:51Z",
       "notes": "Stream parse_csv rows instead of materializing the full table; keep first-20 sample + incremental count."
+    },
+    {
+      "id": "257cb808",
+      "title": "E05 stream scanning and re-embedding",
+      "scope": [
+        "src/token_saver/indexer.py",
+        "tests/test_indexer.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "claimed",
+      "claimed_at": "2026-07-17T21:51:26Z",
+      "heartbeat_at": "2026-07-17T21:51:26Z",
+      "notes": "scan_files as iterator; fetchmany/executemany batched re-embed on backend mismatch; per-file savepoint protection + failure reporting."
     }
   ]
 }
