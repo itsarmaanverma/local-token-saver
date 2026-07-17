@@ -63,7 +63,12 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: `incremental` benchmark (cold full index vs. warm unchanged-tree re-index): 1,000 files 9.313s -> 0.385s (~24x), 5,000 files 47.120s -> 1.956s (~24x), `files_indexed_warm=0` confirming the entire tree correctly took the fast path both times. 6 new tests in `tests/test_indexer.py`: the same-size/preserved-mtime bug reproduced as a permanent regression (proves the fix), an unchanged file provably never calls `_sha256` (mocked to raise if it did), the sampled fingerprint proven to genuinely ignore changes outside its sampled windows while catching changes inside them, a pre-E06 on-disk schema migrating cleanly with correct defaults, and a migrated legacy row self-healing on its first real index run then taking the fast path afterward. Full suite: 116 passed, 5 skipped, only the known P02 Windows failure. Changed-file Ruff and compileall passed clean.
   - Commits: implementation `7e48223`; benchmark `4dc8c41`; completion checkpoint is the commit containing this checklist update. (No separate start checkpoint -- E06 began immediately after E05 completed in the same session, per user direction to do "the next two phases.")
   - Handoff: Stop for user approval. When approved, E07 must first capture PDF-cache-identity baselines before editing `convert.py`.
-- [ ] **E07 — Explicit PDF cache identity**
+- [x] **E07 — Explicit PDF cache identity**
+  - Status: complete
+  - Owner: codex
+  - Summary: Replaced mtime-only PDF mirror reuse with versioned SHA-256 sidecars, atomic mirror/metadata publication, output-integrity validation, and post-commit pruning for deleted or renamed PDFs.
+  - Verification: 16 focused conversion/indexer tests passed; changed-file Ruff and compileall passed. The broader targeted run passed 36 tests with 1 skip and only the documented P02 Windows containment failure.
+  - Handoff: Begin P01 directly; preserve the existing E05/E06 changes while tightening scan and pre-read symlink containment.
 - [ ] **P01 — Workspace symlink privacy boundary**
 - [ ] **P02 — Indexed-only streaming source slices**
 - [ ] **V01 — Final integration checkpoint**

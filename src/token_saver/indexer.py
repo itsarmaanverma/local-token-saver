@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .config import index_path, load_config, ts_dir
-from .convert import ensure_converted
+from .convert import ensure_converted, prune_converted
 from .ignore import load_matcher
 from .parsers import Chunk, file_type, parse_file, parse_markdown
 from .vectors import Embedder, get_embedder, to_blob
@@ -183,11 +183,14 @@ def _delete_files(con: sqlite3.Connection, fids: list[int]) -> None:
         con.execute(f"DELETE FROM files WHERE id IN ({marks})", batch)
 
 
-def _chunks_for(root: Path, path: Path, rel: str, ftype: str, chunk_chars: int) -> list[Chunk]:
+def _chunks_for(root: Path, path: Path, rel: str, ftype: str, chunk_chars: int,
+                source_sha256: str | None = None,
+                source_size: int | None = None) -> list[Chunk]:
     """Parse a file; PDFs go through the cached Markdown mirror first."""
     if ftype != "pdf":
         return parse_file(path, rel, chunk_chars)
-    md = ensure_converted(root, path, rel)
+    md = ensure_converted(root, path, rel, source_sha256=source_sha256,
+                          source_size=source_size)
     if md is None:
         return [Chunk(rel, f"[PDF not converted: extraction failed or pypdf missing] {rel}",
                       "unindexed", [], 1, 1)]
@@ -243,7 +246,7 @@ def _index_one(con: sqlite3.Connection, root: Path, path: Path, chunk_chars: int
     if row:
         _delete_files(con, [row[0]])
     ftype = file_type(path)
-    chunks = _chunks_for(root, path, rel, ftype, chunk_chars)
+    chunks = _chunks_for(root, path, rel, ftype, chunk_chars, sha, st.st_size)
     total = sum(c.ntokens for c in chunks)
     cur = con.execute(
         "INSERT INTO files(path, sha256, mtime, mtime_ns, size, ftype, ntokens, fingerprint) "
@@ -316,6 +319,7 @@ def index_workspace(root: Path, force: bool = False) -> dict:
 
     paths = scan_files(root, int(icfg["max_file_bytes"]), bool(icfg["follow_symlinks"]))
     seen: set[str] = set()
+    pdf_rels: list[str] = []
     scanned = 0
     indexed = 0
     failed = 0
@@ -323,6 +327,8 @@ def index_workspace(root: Path, force: bool = False) -> dict:
         scanned += 1
         rel = p.relative_to(root).as_posix()
         seen.add(rel)
+        if p.suffix.lower() == ".pdf":
+            pdf_rels.append(rel)
         try:
             with _savepoint(con, "idx_file"):
                 if _index_one(con, root, p, chunk_chars, embedder):
@@ -339,6 +345,9 @@ def index_workspace(root: Path, force: bool = False) -> dict:
     con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_backend', ?)",
                 (embedder.name,))
     con.commit()
+    # The database is now durable, so filesystem cache cleanup cannot leave
+    # an otherwise successful indexing transaction half-applied.
+    prune_converted(root, pdf_rels)
     stats = index_stats(con)
     stats.update({"files_scanned": scanned, "files_indexed": indexed,
                   "files_removed": len(stale_ids),
