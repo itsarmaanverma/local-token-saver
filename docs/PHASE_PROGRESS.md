@@ -56,7 +56,13 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: `reembed` benchmark at 1k/10k/100k chunks: peak memory flat at 1.74/1.639/1.656 MB (vs. growing with chunk count under the old `fetchall()`+per-row-`INSERT` approach); time scales linearly with chunk count as expected (0.85/10.5/104.9s), since embedding itself is inherently O(chunks) work -- the fix targets memory boundedness and round-trip count, not embedding speed. 4 new tests in new file `tests/test_indexer.py`: `scan_files` confirmed to be a real generator, a savepoint-rollback test that reproduces the exact corruption scenario being fixed (embed fails on a file's 2nd of 3 chunks -> zero files/chunks rows survive for that file), an `index_workspace()`-level failure-isolation test (one poisoned file fails and is reported via `files_failed` without blocking other files from indexing), and a fetchmany/executemany correctness test proving every chunk is actually re-embedded, not just a subset. Full suite: 110 passed, 5 skipped, only the known P02 Windows failure. Changed-file Ruff and compileall passed clean.
   - Commits: Start checkpoint `56ad6d2`; implementation `6abd90e`; benchmark `30ae0d3`; completion checkpoint is the commit containing this checklist update.
   - Handoff: Stop for user approval. When approved, E06 must first capture incremental-index baselines (unchanged tree, one changed file, preserved-mtime replacement, backend switch) before editing `_index_one()` and the `files` schema.
-- [ ] **E06 — Strong incremental fingerprints**
+- [x] **E06 — Strong incremental fingerprints**
+  - Status: complete
+  - Owner: claude
+  - Summary: Fixed a real correctness bug -- the old fast-path (`mtime==stored and size==stored -> skip`) cannot distinguish a genuinely unchanged file from a same-size replacement whose mtime happens to be restored to its prior value (some backup/restore/checkout tools do this); reproduced and confirmed the bug before changing anything (replace file content with same-length text, restore exact prior mtime, re-index -> stale content silently stayed indexed). `_index_one()` now does a three-tier check: `mtime_ns` (integer nanoseconds via `st_mtime_ns`, avoiding `st_mtime` float-precision pitfalls) + `size` + a cheap sampled BLAKE2 fingerprint (head/mid/tail windows, bounded to ~12KB of reads regardless of file size) must all agree to skip full hashing; if `mtime_ns`+`size` match but the fingerprint doesn't, that's exactly the same-size-preserved-mtime case and it now falls through to a full SHA-256 verification, which remains the sole authoritative identity for the metadata-drift and actually-changed branches. New `files.mtime_ns`/`files.fingerprint` columns; `connect()` now also runs `_migrate_schema()` (idempotent `ALTER TABLE ADD COLUMN`) so pre-existing on-disk indexes migrate in place -- migrated rows get safe defaults (`mtime_ns=0`, `fingerprint=''`) that can never spuriously match, forcing one real verification pass per file after upgrade, then self-healing.
+  - Verification: `incremental` benchmark (cold full index vs. warm unchanged-tree re-index): 1,000 files 9.313s -> 0.385s (~24x), 5,000 files 47.120s -> 1.956s (~24x), `files_indexed_warm=0` confirming the entire tree correctly took the fast path both times. 6 new tests in `tests/test_indexer.py`: the same-size/preserved-mtime bug reproduced as a permanent regression (proves the fix), an unchanged file provably never calls `_sha256` (mocked to raise if it did), the sampled fingerprint proven to genuinely ignore changes outside its sampled windows while catching changes inside them, a pre-E06 on-disk schema migrating cleanly with correct defaults, and a migrated legacy row self-healing on its first real index run then taking the fast path afterward. Full suite: 116 passed, 5 skipped, only the known P02 Windows failure. Changed-file Ruff and compileall passed clean.
+  - Commits: implementation `7e48223`; benchmark `4dc8c41`; completion checkpoint is the commit containing this checklist update. (No separate start checkpoint -- E06 began immediately after E05 completed in the same session, per user direction to do "the next two phases.")
+  - Handoff: Stop for user approval. When approved, E07 must first capture PDF-cache-identity baselines before editing `convert.py`.
 - [ ] **E07 — Explicit PDF cache identity**
 - [ ] **P01 — Workspace symlink privacy boundary**
 - [ ] **P02 — Indexed-only streaming source slices**
@@ -64,14 +70,15 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-E05 is active (claim `257cb808`, owner claude): make `scan_files()` an
-iterator, stream backend-mismatch re-embedding with `fetchmany()`/batched
-`executemany()`, and protect each file's replacement with a SQLite
-SAVEPOINT so a mid-file failure can't commit partial state. E06 will follow
-immediately after in the same file (`_index_one()` + `files` schema), run
-sequentially by the same agent since both tasks touch `indexer.py` -- not
-parallelized, consistent with reverting to one-task-at-a-time after the
-E03/E04 one-off.
+E05 and E06 are both complete and no task is active. E07 is the next
+unchecked task, but it must not begin without explicit user approval.
+
+E05 and E06 were run one after another (not concurrently) by the same
+session in response to a single user go-ahead to do "the next two phases" --
+unlike E03/E04, these share a file (`indexer.py`, and E06 builds directly on
+E05's `_reembed_all`/`_savepoint` helpers), so they were sequenced rather
+than parallelized, consistent with the one-agent-per-file rule and this
+project's default sequential mode.
 
 E03 and E04 were run concurrently by explicit user direction as a one-off
 departure from the default "exactly one active task" rule -- justified
@@ -84,10 +91,10 @@ file access; shared artifacts (`scripts/benchmark_efficiency.py` extended in
 (the orchestrating claude session) only, sequenced after both implementations
 landed, to avoid the concurrent-write risk this project's sequential mode
 normally guards against. Full suite after both merged: 106 passed, 5
-skipped, only the known P02 Windows failure. Do not treat this as the new
-default -- revert to one task at a time for E05 onward.
+skipped, only the known P02 Windows failure. This was a one-off, not the
+new default; E05/E06 correctly reverted to strict one-at-a-time.
 
-Completed claims: `e5bf4a76`, `cc4ef50f`, `5bc6204f`
+Completed claims: `e5bf4a76`, `cc4ef50f`, `5bc6204f`, `257cb808`, `261c8eab`
 
 ## Resume Instructions
 
