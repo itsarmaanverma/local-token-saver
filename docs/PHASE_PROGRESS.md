@@ -14,13 +14,13 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Task Checklist
 
-- [~] **P00 — Continuity setup**
-  - Status: active
+- [x] **P00 — Continuity setup**
+  - Status: complete
   - Owner: codex
-  - Summary: Pending.
-  - Verification: Pending resume and claim-conflict drills.
-  - Commits: Pending.
-  - Handoff: Complete the cross-platform instructions and backlog, validate mesh resume, then start E01 only after P00 is pushed.
+  - Summary: Created the durable Desktop clone, phased branch, sequential mesh board, checklist, backlog, and matching Claude/Codex continuation instructions.
+  - Verification: Sequential mode confirmed; a Claude-owned check was blocked from the active Codex scope while the Codex check passed. The final `any` handoff was appended for resume testing.
+  - Commits: Start checkpoint `3fae635`; completion checkpoint pending this commit.
+  - Handoff: E01 is the only next task. First claim `stats_report.py`, `test_stats.py`, the benchmark script, and progress artifacts, then capture the baseline before editing correlation.
 - [ ] **E01 — Sub-quadratic stats correlation**
 - [ ] **E02 — Bounded vector-fallback memory**
 - [ ] **E03 — Scalable JSONL reporting**
@@ -34,9 +34,9 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
 
 ## Current Task
 
-P00 is creating the durable memory and handoff layer. Runtime source files are out of scope.
+P00 is complete. E01 is next and has not yet been claimed.
 
-Claim: `8aeeed8f`
+Completed claim: `8aeeed8f`
 
 ## Resume Instructions
 
