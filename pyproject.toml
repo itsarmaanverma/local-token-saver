@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-token-saver"
-version = "0.3.0"
+version = "0.3.1"
 description = "Local, folder-scoped, retrieval-first context access for AI coding/document agents (Claude Code, Codex)."
 readme = "README.md"
 requires-python = ">=3.10"

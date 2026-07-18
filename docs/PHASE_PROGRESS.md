@@ -83,15 +83,20 @@ Status markers: `[ ]` pending, `[~]` active, `[!]` blocked, `[x]` complete.
   - Verification: `slice` benchmark (peak memory of a 10-line read) at file sizes 1,000/10,000/100,000 lines: flat 0.035 MB peak at all three sizes and 0.011/0.007/0.016s median -- confirms the read never materializes more than the requested window regardless of file size (the old `.read_text().splitlines()` would have scaled with file size). 9 new regression tests: the previously-failing `test_summarize_abs_path_outside_root` now passes plus a new `../`-relative summarize-escape case the old code never checked; a `get_source_slice` Windows rootless-absolute escape case; invalid-range rejection (`start=0`, `end<start`); ignored-file rejection (`node_modules/`); unindexed-file rejection; changed-file rejection (content mutated after indexing, same-ish size); a 2,500-line file capped to exactly 2,000 returned lines; a CLI `slice` clean-error case (rc=1, no traceback) on an unindexed file; an MCP `get_source_slice` clean-error (`isError`) case on a `../` escape. Full suite: 138 passed, 5 skipped, **zero known failures** -- P02 removes the baseline's last remaining Windows containment failure. Changed-file Ruff and compileall passed clean (two pre-existing, out-of-scope findings confirmed present on `HEAD` before this change and left untouched: unused `load_config` import in `cli.py`, unused `json` import in `test_token_saver.py`).
   - Commits: implementation + tests + benchmark + progress; see the commit containing this checklist update.
   - Handoff: Stop for user approval. When approved, V01 is the final integration checkpoint: re-run the full suite and every benchmark case across all of E01-P02, confirm zero known failures remain, and close out the branch documentation.
-- [ ] **V01 — Final integration checkpoint**
+- [x] **V01 — Final integration checkpoint**
+  - Status: complete
+  - Owner: claude
+  - Summary: Verification-only checkpoint closing out the sequential remediation branch (E01-E07, P01-P02). No source changes. Re-ran the full test suite and every benchmark case (stats, search, jsonl, csv, reembed, incremental, slice) in one consolidated pass, ran an end-to-end CLI smoke test of the whole pipeline (init -> index -> search -> retrieve -> summarize file/folder -> slice -> advise -> stats -> status) against a fresh scratch workspace, and added a CHANGELOG.md entry (`[0.3.1]`) summarizing the branch for anyone reading release history instead of the phase-by-phase progress log.
+  - Verification: Full suite: **138 passed, 5 skipped, 0 failed** -- the branch's baseline started at 83 passed/6 skipped/1 known Windows failure and now has zero known failures. Consolidated benchmark re-run: `stats` 1k/10k/100k rows 0.0037/0.0408/0.6137s median (sub-quadratic, matches E01's record); `search` (pure-vector fallback) 10k/100k chunks 0.105/0.100 MB flat peak memory (matches E02); `jsonl` 1k/10k/100k rows 0.186/0.241/0.239 MB flat peak (matches E03); `csv` 1k/10k/100k rows 0.102/0.892/9.475 MB peak, input-bound not sample-bound (matches E04); `reembed` 10k/100k chunks 1.751/1.656 MB flat peak (matches E05); `incremental` 1k/5k files cold 10.87s/74.48s vs warm 4.03s/20.81s with `files_indexed_warm=0` both times, confirming E06's fast path still fires -- warm speedup is a smaller ~2.7-3.6x on this run than E06's original ~24x measurement, attributable to P01's added per-file/per-directory `_authorized_read_path` symlink-boundary check now running on every scanned entry (a deliberate security tradeoff from P01, not a regression introduced here -- correctness, not walltime, is P01's contract); `slice` 1k/10k/100k-line files flat 0.035 MB peak reading only the requested 10-line window (matches P02). End-to-end CLI smoke test passed clean on all nine subcommands exercised. No changed-file lint/compileall needed (no source files touched).
+  - Commits: docs + CHANGELOG only; see the commit containing this checklist update.
+  - Handoff: All checklist items (P00, E01-E07, P01, P02, V01) are complete. Branch `codex/efficiency-phases` is pushed and has zero known test failures. Ready for user review and a merge decision into `main`; no further phase is queued. If new work is wanted, start a new checklist/branch rather than reopening this one.
 
 ## Current Task
 
-P02 is complete: the baseline's one known failure (Windows containment) is
-fixed, and the full suite now passes with zero known failures for the first
-time in this branch. V01 is the next and final unchecked task -- a
-verification/closeout checkpoint (full suite + full benchmark re-run,
-CHANGELOG entry, merge-readiness note), not new feature work.
+All phases (P00, E01-E07, P01-P02, V01) are complete. The branch is pushed,
+the full suite passes with zero known failures, and every benchmark gate has
+a current, re-verified record in this document. Nothing is queued next --
+stop here pending user review/merge, or a new task if the user starts one.
 
 E05 and E06 were run one after another (not concurrently) by the same
 session in response to a single user go-ahead to do "the next two phases" --

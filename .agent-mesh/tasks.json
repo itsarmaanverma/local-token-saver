@@ -182,6 +182,22 @@
       "claimed_at": "2026-07-17T23:49:26Z",
       "heartbeat_at": "2026-07-17T23:49:29Z",
       "notes": "Stream get_source_slice line-by-line; reject escaping/ignored/unindexed/changed files; validate ranges; cap at 2000 lines; fix Windows containment regression in cmd_summarize."
+    },
+    {
+      "id": "050a0f04",
+      "title": "V01 final integration checkpoint",
+      "scope": [
+        "docs/PHASE_PROGRESS.md",
+        "CHANGELOG.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:50:01Z",
+      "heartbeat_at": "2026-07-18T00:04:39Z",
+      "notes": "Full suite + full benchmark re-run across E01-P02, CHANGELOG entry, merge-readiness note. Verification/closeout, not new feature work."
     }
   ]
 }
