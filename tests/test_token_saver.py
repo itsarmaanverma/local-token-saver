@@ -242,6 +242,79 @@ class FixesAndPipelineTest(unittest.TestCase):
         rc = cli_main(["summarize", "/etc/passwd", str(self.tmp)])
         self.assertEqual(rc, 1)  # clean error, no traceback
 
+    def test_summarize_relative_dotdot_escape(self):
+        """cmd_summarize's containment check must catch ".." escapes too --
+        the old is_absolute()-branched logic never even attempted a
+        containment check for non-absolute targets."""
+        from token_saver.cli import main as cli_main
+        self._init_index()
+        rc = cli_main(["summarize", "../outside.txt", str(self.tmp)])
+        self.assertEqual(rc, 1)
+
+    def test_source_slice_windows_rootless_absolute_escape(self):
+        """"/etc/passwd" has no drive letter, so Path.is_absolute() reports
+        False on Windows -- the P02 fix must not rely on is_absolute() to
+        detect an escape (this is the known Windows containment regression)."""
+        self._init_index()
+        with self.assertRaises(ValueError):
+            get_source_slice(self.tmp, "/etc/passwd")
+
+    def test_source_slice_invalid_ranges(self):
+        (self.tmp / "a.md").write_text("# renewal terms\nline2\nline3\n", encoding="utf-8")
+        self._init_index()
+        with self.assertRaises(ValueError):
+            get_source_slice(self.tmp, "a.md", start=0)
+        with self.assertRaises(ValueError):
+            get_source_slice(self.tmp, "a.md", start=5, end=3)
+
+    def test_source_slice_rejects_ignored_file(self):
+        (self.tmp / "node_modules").mkdir()
+        (self.tmp / "node_modules" / "lib.js").write_text("var x = 1;\n", encoding="utf-8")
+        self._init_index()
+        with self.assertRaises(ValueError) as ctx:
+            get_source_slice(self.tmp, "node_modules/lib.js")
+        self.assertIn("ignored", str(ctx.exception))
+
+    def test_source_slice_rejects_unindexed_file(self):
+        self._init_index()
+        (self.tmp / "new_untracked.md").write_text("# not yet indexed\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            get_source_slice(self.tmp, "new_untracked.md")
+        self.assertIn("not indexed", str(ctx.exception))
+
+    def test_source_slice_rejects_changed_file(self):
+        f = self.tmp / "a.md"
+        f.write_text("# renewal terms\nline2\nline3\n", encoding="utf-8")
+        self._init_index()
+        f.write_text("# renewal terms MUTATED\nline2\nline3\nline4\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as ctx:
+            get_source_slice(self.tmp, "a.md")
+        self.assertIn("changed", str(ctx.exception))
+
+    def test_source_slice_caps_output_at_2000_lines(self):
+        big = self.tmp / "big.txt"
+        big.write_text("".join(f"line {i}\n" for i in range(2500)), encoding="utf-8")
+        self._init_index()
+        out = get_source_slice(self.tmp, "big.txt", start=1, end=2500)
+        header, _, body = out.partition("\n")
+        self.assertEqual(header, "big.txt:1-2000")
+        self.assertEqual(body.count("\n") + 1, 2000)
+
+    def test_cli_slice_clean_error_on_unindexed_file(self):
+        from token_saver.cli import main as cli_main
+        self._init_index()
+        (self.tmp / "untracked.md").write_text("# nope\n", encoding="utf-8")
+        rc = cli_main(["slice", "untracked.md", "--path", str(self.tmp)])
+        self.assertEqual(rc, 1)  # clean error, no traceback
+
+    def test_mcp_slice_clean_error_on_escape(self):
+        self._init_index()
+        srv = Server(str(self.tmp))
+        bad = srv.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "get_source_slice",
+                                     "arguments": {"file": "../outside.txt"}}})
+        self.assertTrue(bad["result"].get("isError"))
+
     def test_mcp_int_coercion(self):
         (self.tmp / "a.md").write_text("# renewal terms apply here", encoding="utf-8")
         self._init_index()
@@ -292,6 +365,63 @@ class FixesAndPipelineTest(unittest.TestCase):
         c = embed("goroutine channel scheduler preemption")
         self.assertGreater(cosine(a, b), cosine(a, c))
         self.assertAlmostEqual(cosine(a, a), 1.0, places=5)
+
+    def test_vector_fallback_gate_tiebreak_and_text_fetch(self):
+        """E02: the bounded-heap fallback must reproduce the old
+        materialize-everything-then-sort semantics exactly -- same gate,
+        same score ordering, same ascending-chunk-id tie-break -- and must
+        fetch the correct text for each surviving winner, not a swapped one.
+        """
+        from array import array
+
+        from token_saver.indexer import connect
+        from token_saver.retrieval import _vector_fallback_search
+        from token_saver.vectors import to_blob
+
+        con = connect(self.tmp)
+
+        def make_vec(x0):
+            v = array("f", [0.0] * 384)
+            v[0] = x0
+            return v
+
+        # (path, cosine-along-dim0): three-way tie at 0.9, one clear winner
+        # at 0.95, one below the hashed_tf gate (0.35) that must be excluded.
+        specs = [("a.md", 0.9), ("b.md", 0.9), ("c.md", 0.2),
+                 ("d.md", 0.9), ("e.md", 0.95)]
+        cid_by_path = {}
+        for i, (path, x0) in enumerate(specs):
+            fcur = con.execute(
+                "INSERT INTO files(path, sha256, mtime, size, ftype, ntokens) "
+                "VALUES (?,?,?,?,?,?)", (path, f"sha{i}", 0.0, 10, "md", 5))
+            ccur = con.execute(
+                "INSERT INTO chunks(file_id, path, section, heading_path, start_line, "
+                "end_line, page, text, ntokens) VALUES (?,?,?,?,?,?,?,?,?)",
+                (fcur.lastrowid, path, "", "", 1, 1, None, f"text for {path}", 5))
+            cid_by_path[path] = ccur.lastrowid
+            con.execute("INSERT INTO vectors(chunk_id, vec) VALUES (?,?)",
+                        (ccur.lastrowid, to_blob(make_vec(x0))))
+        con.commit()
+
+        qvec = array("f", [1.0] + [0.0] * 383)  # dot product == x0 directly
+
+        class StubEmbedder:
+            name = "hashed_tf"
+
+        hits = _vector_fallback_search(con, qvec, set(), StubEmbedder(), top_k=3)
+        con.close()
+
+        self.assertEqual(len(hits), 3)
+        self.assertNotIn("c.md", {h.path for h in hits})  # below gate
+        self.assertEqual(hits[0].path, "e.md")             # clear winner first
+        for h in hits:
+            self.assertEqual(h.text, f"text for {h.path}")  # winner text not swapped
+
+        # Tie group {a,b,d} at cos 0.9 has 2 remaining slots -- ascending
+        # chunk id wins, matching the old stable-sort-by-score behavior.
+        tied_ids = sorted(cid_by_path[p] for p in ("a.md", "b.md", "d.md"))
+        kept_tied = sorted(h.chunk_id for h in hits if h.path != "e.md")
+        self.assertEqual(kept_tied, tied_ids[:2])
 
 
 if __name__ == "__main__":

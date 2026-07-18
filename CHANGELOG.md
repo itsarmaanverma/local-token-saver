@@ -4,6 +4,48 @@ All notable changes to Local Token Saver are documented here. This project
 adheres to [Semantic Versioning](https://semver.org/) and the
 [Keep a Changelog](https://keepachangelog.com/) format.
 
+## [0.3.1] — efficiency and workspace-privacy remediation
+
+A sequential remediation pass (see `docs/PHASE_PROGRESS.md` for the full
+per-phase log) that bounds memory/time on every hot path that previously
+scaled with data size, and closes several workspace-boundary gaps. No
+public API changes; existing indexes and configs remain valid.
+
+### Fixed
+- `token-saver summarize` silently treated absolute-looking paths without a
+  drive letter (e.g. `/etc/passwd`) as in-workspace relative paths on
+  Windows, because `Path.is_absolute()` reports `False` for them — the
+  escape check never ran. Replaced with an unconditional
+  join+resolve+`relative_to()` check that also closes a `../`-relative
+  escape gap the old code never checked.
+- `search()`'s pure-vector fallback crashed past ~1,000 chunks
+  (`sqlite3.OperationalError: too many SQL variables`) instead of just
+  using more memory than intended.
+- A mid-file indexing failure (e.g. an embedder error partway through a
+  file's chunks) could silently commit a partially-replaced file into the
+  index. Each file's replacement is now wrapped in its own rollback-safe
+  savepoint.
+- `mtime`+`size` alone could not detect a same-size file replacement that
+  restores its original mtime (some backup/restore/checkout tools do this);
+  incremental indexing now also checks a sampled content fingerprint.
+
+### Changed
+- Stats correlation, JSONL report loading, CSV sampling, workspace
+  scanning/re-embedding, and `get_source_slice` no longer materialize
+  whole datasets in memory — each now streams and stays memory-bounded as
+  input size grows (verified flat/sub-linear from 1k to 100k rows/chunks).
+- `get_source_slice` now rejects gitignore-matched paths, paths never
+  indexed, and paths whose on-disk content has drifted since indexing;
+  validates that `start`/`end` form a positive range; and caps any
+  returned window at 2,000 lines.
+- Workspace scanning now disables symlink/junction traversal by default;
+  when explicitly enabled, only targets that resolve inside the workspace
+  are followed, with cycle/duplicate prevention and pre-read
+  reauthorization on every access.
+- PDF-to-Markdown cache reuse is now keyed by an explicit SHA-256 +
+  converter-version sidecar (previously mtime-only), with stale mirrors
+  pruned after a successful re-index.
+
 ## [0.3.0] — pxpipe chain proxy + unified stats
 
 v0.3.0 is cumulative and includes the complete v0.2.0 embedding release.

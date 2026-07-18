@@ -1,0 +1,203 @@
+{
+  "tasks": [
+    {
+      "id": "8aeeed8f",
+      "title": "P00 continuity setup",
+      "scope": [
+        "CLAUDE.md",
+        "AGENTS.md",
+        "docs/HIGH_IMPACT_EFFICIENCY_FIXES.md",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/**"
+      ],
+      "owner": "codex",
+      "status": "done",
+      "claimed_at": "2026-07-17T19:05:29Z",
+      "heartbeat_at": "2026-07-17T19:08:50Z",
+      "notes": "Initialize the durable sequential workspace and cross-platform handoff artifacts."
+    },
+    {
+      "id": "282027b0",
+      "title": "E01 sub-quadratic stats correlation",
+      "scope": [
+        "src/token_saver/stats_report.py",
+        "tests/test_stats.py",
+        "scripts/benchmark_efficiency.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/**"
+      ],
+      "owner": "codex",
+      "status": "done",
+      "claimed_at": "2026-07-17T19:10:16Z",
+      "heartbeat_at": "2026-07-17T19:16:39Z",
+      "notes": "Preserve correlation semantics while replacing full model-group rescans with bounded timestamp-window lookup."
+    },
+    {
+      "id": "e5bf4a76",
+      "title": "E02 bounded pure-vector fallback memory",
+      "scope": [
+        "src/token_saver/retrieval.py",
+        "tests/test_retrieval.py",
+        "scripts/benchmark_efficiency.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T19:32:32Z",
+      "heartbeat_at": "2026-07-17T19:55:52Z",
+      "notes": "Bound search() vector-fallback memory: stream metadata/vectors, keep only top_k in a heap, fetch text only for winners; preserve ranking and deterministic ties."
+    },
+    {
+      "id": "cc4ef50f",
+      "title": "E03 scalable JSONL reporting",
+      "scope": [
+        "src/token_saver/stats.py",
+        "tests/test_stats.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T20:56:17Z",
+      "heartbeat_at": "2026-07-17T21:10:51Z",
+      "notes": "Backward-read newest N rows from EOF in load_events; thread-safe single-write append_event (proxy.py runs ThreadingHTTPServer)."
+    },
+    {
+      "id": "5bc6204f",
+      "title": "E04 streaming CSV sampling",
+      "scope": [
+        "src/token_saver/parsers.py",
+        "tests/test_parsers.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T20:56:17Z",
+      "heartbeat_at": "2026-07-17T21:10:51Z",
+      "notes": "Stream parse_csv rows instead of materializing the full table; keep first-20 sample + incremental count."
+    },
+    {
+      "id": "257cb808",
+      "title": "E05 stream scanning and re-embedding",
+      "scope": [
+        "src/token_saver/indexer.py",
+        "tests/test_indexer.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T21:51:26Z",
+      "heartbeat_at": "2026-07-17T22:00:21Z",
+      "notes": "scan_files as iterator; fetchmany/executemany batched re-embed on backend mismatch; per-file savepoint protection + failure reporting."
+    },
+    {
+      "id": "261c8eab",
+      "title": "E06 strong incremental fingerprints",
+      "scope": [
+        "src/token_saver/indexer.py",
+        "tests/test_indexer.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T22:00:40Z",
+      "heartbeat_at": "2026-07-17T22:07:31Z",
+      "notes": "Add mtime_ns + sampled BLAKE2 fingerprint to files schema; use as fast pre-check to skip full SHA-256 hashing of unchanged files while still catching same-size/preserved-mtime replacements; migrate existing indexes in place; retain SHA-256 as authoritative identity."
+    },
+    {
+      "id": "f58500b5",
+      "title": "E07 explicit PDF cache identity",
+      "scope": [
+        "src/token_saver/convert.py",
+        "tests/test_convert.py",
+        "tests/test_token_saver.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "codex",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:03:22Z",
+      "heartbeat_at": "2026-07-17T23:07:00Z",
+      "notes": "Atomic identity sidecars, validated reuse, and stale mirror pruning; preserve active E05/E06 indexer changes."
+    },
+    {
+      "id": "4b7da4dd",
+      "title": "E07 PDF cache index integration",
+      "scope": [
+        "src/token_saver/indexer.py",
+        "tests/test_indexer.py"
+      ],
+      "owner": "codex",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:05:17Z",
+      "heartbeat_at": "2026-07-17T23:07:00Z",
+      "notes": "Pass authoritative PDF identity and prune stale converted artifacts only after successful index commit; preserve existing E05/E06 hunks."
+    },
+    {
+      "id": "8cfb0406",
+      "title": "P01 workspace symlink privacy boundary",
+      "scope": [
+        "src/token_saver/indexer.py",
+        "tests/test_indexer.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "codex",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:07:20Z",
+      "heartbeat_at": "2026-07-17T23:12:11Z",
+      "notes": "Skip all links by default; constrain enabled traversal to internal targets with cycle prevention and pre-read revalidation."
+    },
+    {
+      "id": "a885b562",
+      "title": "P02 indexed-only streaming source slices",
+      "scope": [
+        "src/token_saver/retrieval.py",
+        "src/token_saver/cli.py",
+        "tests/test_token_saver.py",
+        "scripts/benchmark_efficiency.py",
+        "docs/PHASE_PROGRESS.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:49:26Z",
+      "heartbeat_at": "2026-07-17T23:49:29Z",
+      "notes": "Stream get_source_slice line-by-line; reject escaping/ignored/unindexed/changed files; validate ranges; cap at 2000 lines; fix Windows containment regression in cmd_summarize."
+    },
+    {
+      "id": "050a0f04",
+      "title": "V01 final integration checkpoint",
+      "scope": [
+        "docs/PHASE_PROGRESS.md",
+        "CHANGELOG.md",
+        ".agent-mesh/handoff.md",
+        ".agent-mesh/meta.json",
+        ".agent-mesh/tasks.json"
+      ],
+      "owner": "claude",
+      "status": "done",
+      "claimed_at": "2026-07-17T23:50:01Z",
+      "heartbeat_at": "2026-07-18T00:04:39Z",
+      "notes": "Full suite + full benchmark re-run across E01-P02, CHANGELOG entry, merge-readiness note. Verification/closeout, not new feature work."
+    }
+  ]
+}

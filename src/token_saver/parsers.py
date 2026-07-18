@@ -143,22 +143,32 @@ def parse_text(text: str, rel: str, chunk_chars: int) -> list[Chunk]:
 
 
 def parse_csv(text: str, rel: str, chunk_chars: int) -> list[Chunk]:
-    """Schema summary + sampled rows, not the whole table."""
+    """Schema summary + sampled rows, not the whole table.
+
+    Streams the CSV one row at a time so memory stays proportional to the
+    sample size (~20 rows), instead of materializing the entire table just
+    to compute a 20-row sample and a count.
+    """
     delim = "\t" if rel.endswith(".tsv") else ","
+    reader = csv.reader(io.StringIO(text), delimiter=delim)
     try:
-        rows = list(csv.reader(io.StringIO(text), delimiter=delim))
+        header = next(reader, None)
+        if header is None:
+            return []
+        sample: list[list[str]] = []
+        total_data_rows = 0
+        for row in reader:
+            total_data_rows += 1
+            if len(sample) < 20:
+                sample.append(row)
     except csv.Error:
         return parse_text(text, rel, chunk_chars)
-    if not rows:
-        return []
-    header = rows[0]
-    sample = rows[1:21]
     body = (
-        f"CSV schema ({len(rows) - 1} data rows): columns = {header}\n"
+        f"CSV schema ({total_data_rows} data rows): columns = {header}\n"
         "Sample rows:\n"
         + "\n".join(delim.join(r) for r in sample)
     )
-    return [Chunk(rel, body[: chunk_chars * 2], "schema+sample", [], 1, min(len(rows), 21))]
+    return [Chunk(rel, body[: chunk_chars * 2], "schema+sample", [], 1, min(total_data_rows + 1, 21))]
 
 
 def parse_data(text: str, rel: str, chunk_chars: int) -> list[Chunk]:
